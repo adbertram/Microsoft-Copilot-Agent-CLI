@@ -29,6 +29,11 @@ class Config:
         return os.getenv("DATAVERSE_URL")
 
     @property
+    def environment_id(self) -> Optional[str]:
+        """Get Power Platform environment ID (e.g., Default-<tenant-id>)."""
+        return os.getenv("DATAVERSE_ENVIRONMENT_ID") or os.getenv("POWERPLATFORM_ENVIRONMENT_ID")
+
+    @property
     def tenant_id(self) -> Optional[str]:
         """Get Azure AD tenant ID."""
         return os.getenv("AZURE_TENANT_ID")

@@ -617,6 +617,145 @@ class DataverseClient:
         self.delete(f"botcomponents({component_id})")
 
     # =========================================================================
+    # Connector Methods
+    # =========================================================================
+
+    def list_connectors(self, environment_id: Optional[str] = None) -> list[dict]:
+        """
+        List all available connectors (both custom and managed) in the environment.
+
+        Args:
+            environment_id: Power Platform environment ID. If not provided,
+                            will use DATAVERSE_ENVIRONMENT_ID from config.
+
+        Returns:
+            List of connector records from Power Apps API
+
+        Note:
+            This uses the Power Apps API to list all connectors available
+            in the environment, including both managed (Microsoft) and
+            custom connectors.
+        """
+        # Get environment ID from config if not provided
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file (e.g., Default-<tenant-id> or the environment GUID).\n\n"
+                    "You can find your environment ID in the Power Platform admin center."
+                )
+
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis"
+            f"?api-version=2016-11-01"
+            f"&$filter=environment eq '{environment_id}'"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("value", [])
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to list connectors: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Request failed: {e}")
+
+    def get_connector(self, connector_id: str) -> dict:
+        """
+        Get a specific connector by ID.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_office365)
+
+        Returns:
+            Connector record from Power Apps API
+        """
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/{connector_id}"
+            f"?api-version=2016-11-01"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to get connector: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Request failed: {e}")
+
+    # =========================================================================
+    # Flow Methods
+    # =========================================================================
+
+    def list_flows(self, category: int = None) -> list[dict]:
+        """
+        List Power Automate cloud flows in the environment.
+
+        Args:
+            category: Optional filter by flow category:
+                - 0: Standard (automated/scheduled flows)
+                - 5: Instant (button/HTTP triggered flows)
+                - 6: Business process flows
+
+        Returns:
+            List of workflow (flow) records
+
+        Note:
+            Flows that can be used as agent tools are typically category 5 (instant)
+            or flows with HTTP triggers.
+        """
+        endpoint = "workflows?$filter=type eq 1"  # type 1 = Flow (vs 2 = Action)
+        if category is not None:
+            endpoint += f" and category eq {category}"
+        endpoint += "&$orderby=name"
+        result = self.get(endpoint)
+        return result.get("value", [])
+
+    def get_flow(self, workflow_id: str) -> dict:
+        """
+        Get a specific flow by ID.
+
+        Args:
+            workflow_id: The workflow's unique identifier (GUID)
+
+        Returns:
+            Workflow (flow) record
+        """
+        return self.get(f"workflows({workflow_id})")
+
+    # =========================================================================
     # Transcript Methods
     # =========================================================================
 

@@ -25,6 +25,18 @@ try:
 except ImportError:
     pass
 
+try:
+    from .commands import connector
+    app.add_typer(connector.app, name="connector", help="Manage Power Platform connectors")
+except ImportError:
+    pass
+
+try:
+    from .commands import flow
+    app.add_typer(flow.app, name="flow", help="Manage Power Automate flows")
+except ImportError:
+    pass
+
 
 @app.callback(invoke_without_command=True)
 def callback(
