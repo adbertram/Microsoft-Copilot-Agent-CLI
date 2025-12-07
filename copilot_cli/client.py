@@ -90,9 +90,27 @@ class DataverseClient:
         """Make a PATCH request."""
         return self._request("PATCH", endpoint, json=data)
 
-    def delete(self, endpoint: str) -> None:
-        """Make a DELETE request."""
+    def delete(self, endpoint: str, verify: bool = True) -> None:
+        """
+        Make a DELETE request.
+
+        Args:
+            endpoint: API endpoint to delete
+            verify: If True, verify the resource was actually deleted by
+                    attempting to GET it after deletion. Raises ClientError
+                    if resource still exists.
+        """
         self._request("DELETE", endpoint)
+
+        if verify:
+            try:
+                self._request("GET", endpoint)
+                # If we get here, resource still exists - deletion failed
+                raise ClientError(f"Delete failed: resource still exists at {endpoint}")
+            except ClientError as e:
+                # 404 means successfully deleted, re-raise other errors
+                if "404" not in str(e):
+                    raise
 
     def list_bots(self, select: Optional[list[str]] = None) -> list[dict]:
         """
@@ -198,22 +216,10 @@ class DataverseClient:
             schema_name = (topic.get("schemaname") or "").lower()
             name = topic.get("name") or ""
 
-            # System topic indicators
+            # System topic indicators - use API metadata only
             is_system = (
                 category == "SYSTEM"
                 or schema_name.startswith("system.")
-                or name.startswith("System:")
-                or name in [
-                    "Greeting",
-                    "Goodbye",
-                    "Escalate",
-                    "Start over",
-                    "Thank you",
-                    "Fallback",
-                    "Multiple topics matched",
-                    "Conversational boosting",
-                    "On Error",
-                ]
             )
 
             topic["_is_system"] = is_system
