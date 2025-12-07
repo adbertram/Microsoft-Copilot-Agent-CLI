@@ -483,6 +483,94 @@ class DataverseClient:
 
         self.patch(f"bots({bot_id})", bot_data)
 
+    # =========================================================================
+    # Application Insights Methods
+    # =========================================================================
+
+    def get_bot_app_insights(self, bot_id: str) -> dict:
+        """
+        Get Application Insights configuration for a bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+
+        Returns:
+            Dict containing Application Insights settings:
+                - enabled: Whether App Insights is configured
+                - connectionString: The App Insights connection string (if set)
+                - logActivities: Whether activity logging is enabled
+                - logSensitiveProperties: Whether sensitive property logging is enabled
+        """
+        bot = self.get_bot(bot_id)
+        config = json.loads(bot.get("configuration", "{}"))
+
+        # Extract App Insights settings from configuration
+        app_insights = config.get("applicationInsights", {})
+
+        return {
+            "enabled": bool(app_insights.get("connectionString")),
+            "connectionString": app_insights.get("connectionString", ""),
+            "logActivities": app_insights.get("logActivities", False),
+            "logSensitiveProperties": app_insights.get("logSensitiveProperties", False),
+        }
+
+    def update_bot_app_insights(
+        self,
+        bot_id: str,
+        connection_string: Optional[str] = None,
+        log_activities: Optional[bool] = None,
+        log_sensitive_properties: Optional[bool] = None,
+        disable: bool = False,
+    ) -> None:
+        """
+        Update Application Insights configuration for a bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+            connection_string: App Insights connection string (from Azure portal)
+            log_activities: Enable logging of incoming/outgoing messages and events
+            log_sensitive_properties: Enable logging of sensitive properties (userid, name, text, speak)
+            disable: Set to True to disable Application Insights (clears connection string)
+
+        Note:
+            - Multiple agents can share the same App Insights instance by using the same connection string.
+            - The connection string can be found in your Azure Application Insights resource overview.
+            - After enabling, telemetry will be available in the Application Insights Logs section.
+        """
+        # Get current bot configuration
+        current_bot = self.get_bot(bot_id)
+        current_config = json.loads(current_bot.get("configuration", "{}"))
+
+        # Initialize applicationInsights section if not present
+        if "applicationInsights" not in current_config:
+            current_config["applicationInsights"] = {}
+
+        app_insights = current_config["applicationInsights"]
+
+        # Handle disable
+        if disable:
+            app_insights["connectionString"] = ""
+            app_insights["logActivities"] = False
+            app_insights["logSensitiveProperties"] = False
+        else:
+            # Update connection string if provided
+            if connection_string is not None:
+                app_insights["connectionString"] = connection_string
+
+            # Update logging options if provided
+            if log_activities is not None:
+                app_insights["logActivities"] = log_activities
+
+            if log_sensitive_properties is not None:
+                app_insights["logSensitiveProperties"] = log_sensitive_properties
+
+        # Save updated configuration
+        bot_data = {
+            "configuration": json.dumps(current_config, indent=2)
+        }
+
+        self.patch(f"bots({bot_id})", bot_data)
+
     def list_knowledge_sources(self, bot_id: str, source_type: Optional[str] = None) -> list[dict]:
         """
         List knowledge sources for a bot.

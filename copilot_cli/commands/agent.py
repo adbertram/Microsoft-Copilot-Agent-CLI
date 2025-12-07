@@ -1920,3 +1920,233 @@ def tool_remove(
 
 # Register tool subgroup
 app.add_typer(tool_app, name="tool")
+
+
+# =============================================================================
+# Analytics (Application Insights) Commands
+# =============================================================================
+
+analytics_app = typer.Typer(help="Manage Application Insights telemetry for agents")
+
+
+@analytics_app.command("get")
+def analytics_get(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+):
+    """
+    Get Application Insights configuration for an agent.
+
+    Shows the current App Insights connection string and logging settings.
+
+    Examples:
+        copilot agent analytics get fcef595a-30bb-f011-bbd3-000d3a8ba54e
+    """
+    try:
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        config = client.get_bot_app_insights(bot_id)
+
+        typer.echo(f"\nApplication Insights for '{bot_name}':\n")
+
+        if config["enabled"]:
+            typer.echo(f"  Status:                   Enabled")
+            # Mask connection string for security (show only first 20 chars)
+            conn_str = config["connectionString"]
+            masked = conn_str[:40] + "..." if len(conn_str) > 40 else conn_str
+            typer.echo(f"  Connection String:        {masked}")
+        else:
+            typer.echo(f"  Status:                   Not configured")
+
+        typer.echo(f"  Log Activities:           {config['logActivities']}")
+        typer.echo(f"  Log Sensitive Properties: {config['logSensitiveProperties']}")
+        typer.echo("")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@analytics_app.command("enable")
+def analytics_enable(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    connection_string: str = typer.Option(
+        ...,
+        "--connection-string",
+        "-c",
+        help="App Insights connection string (from Azure portal)",
+    ),
+    log_activities: bool = typer.Option(
+        False,
+        "--log-activities",
+        "-l",
+        help="Enable logging of incoming/outgoing messages and events",
+    ),
+    log_sensitive: bool = typer.Option(
+        False,
+        "--log-sensitive",
+        "-s",
+        help="Enable logging of sensitive properties (userid, name, text, speak)",
+    ),
+):
+    """
+    Enable Application Insights telemetry for an agent.
+
+    Configures the agent to send telemetry to an existing App Insights instance.
+    Multiple agents can share the same App Insights instance.
+
+    The connection string can be found in your Azure Application Insights
+    resource under Settings > Properties or in the Overview section.
+
+    Examples:
+        copilot agent analytics enable <bot-id> -c "InstrumentationKey=xxx;..."
+        copilot agent analytics enable <bot-id> -c "..." --log-activities
+        copilot agent analytics enable <bot-id> -c "..." --log-activities --log-sensitive
+    """
+    try:
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        typer.echo(f"Enabling Application Insights for '{bot_name}'...")
+
+        client.update_bot_app_insights(
+            bot_id=bot_id,
+            connection_string=connection_string,
+            log_activities=log_activities,
+            log_sensitive_properties=log_sensitive,
+        )
+
+        print_success(f"Application Insights enabled for '{bot_name}'!")
+        typer.echo("")
+        typer.echo("Settings applied:")
+        typer.echo(f"  Log Activities:           {log_activities}")
+        typer.echo(f"  Log Sensitive Properties: {log_sensitive}")
+        typer.echo("")
+        typer.echo("Note: Telemetry data will appear in your App Insights Logs section.")
+        typer.echo("      You may need to republish the agent for changes to take effect.")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@analytics_app.command("disable")
+def analytics_disable(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Disable Application Insights telemetry for an agent.
+
+    Removes the App Insights connection string and disables all logging.
+
+    Examples:
+        copilot agent analytics disable <bot-id>
+        copilot agent analytics disable <bot-id> --force
+    """
+    try:
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        if not force:
+            confirm = typer.confirm(
+                f"Are you sure you want to disable Application Insights for '{bot_name}'?"
+            )
+            if not confirm:
+                typer.echo("Operation cancelled.")
+                raise typer.Exit(0)
+
+        typer.echo(f"Disabling Application Insights for '{bot_name}'...")
+
+        client.update_bot_app_insights(bot_id=bot_id, disable=True)
+
+        print_success(f"Application Insights disabled for '{bot_name}'.")
+        typer.echo("")
+        typer.echo("Note: You may need to republish the agent for changes to take effect.")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@analytics_app.command("update")
+def analytics_update(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    log_activities: Optional[bool] = typer.Option(
+        None,
+        "--log-activities/--no-log-activities",
+        help="Enable/disable logging of messages and events",
+    ),
+    log_sensitive: Optional[bool] = typer.Option(
+        None,
+        "--log-sensitive/--no-log-sensitive",
+        help="Enable/disable logging of sensitive properties",
+    ),
+):
+    """
+    Update Application Insights logging options for an agent.
+
+    Use this to change logging settings without modifying the connection string.
+
+    Examples:
+        copilot agent analytics update <bot-id> --log-activities
+        copilot agent analytics update <bot-id> --no-log-activities
+        copilot agent analytics update <bot-id> --log-sensitive
+        copilot agent analytics update <bot-id> --log-activities --log-sensitive
+    """
+    if log_activities is None and log_sensitive is None:
+        typer.echo("Error: Please specify at least one option to update.")
+        typer.echo("Use --log-activities/--no-log-activities or --log-sensitive/--no-log-sensitive")
+        raise typer.Exit(1)
+
+    try:
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        typer.echo(f"Updating Application Insights settings for '{bot_name}'...")
+
+        client.update_bot_app_insights(
+            bot_id=bot_id,
+            log_activities=log_activities,
+            log_sensitive_properties=log_sensitive,
+        )
+
+        print_success(f"Application Insights settings updated for '{bot_name}'!")
+
+        # Show what was updated
+        updates = []
+        if log_activities is not None:
+            updates.append(f"Log Activities: {log_activities}")
+        if log_sensitive is not None:
+            updates.append(f"Log Sensitive Properties: {log_sensitive}")
+
+        if updates:
+            typer.echo("")
+            typer.echo("Updated settings:")
+            for update in updates:
+                typer.echo(f"  {update}")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+# Register analytics subgroup
+app.add_typer(analytics_app, name="analytics")
