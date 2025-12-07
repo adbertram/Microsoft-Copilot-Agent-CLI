@@ -632,8 +632,8 @@ def prompt_agent(
                 raise typer.Exit(1)
             directline_token = directline_secret
 
-        # Handle file content extraction (same for both API flows)
-        combined_message = message
+        # Handle file attachment (upload via Direct Line upload endpoint)
+        file_to_upload = None
         if file:
             file_path = Path(file)
             if not file_path.exists():
@@ -643,77 +643,45 @@ def prompt_agent(
             file_name = file_path.name
             ext = file_path.suffix.lower()
 
-            # Extract text content from the file
-            extracted_text = None
+            # Map file extensions to MIME types
+            mime_types = {
+                ".txt": "text/plain",
+                ".md": "text/markdown",
+                ".json": "application/json",
+                ".xml": "application/xml",
+                ".html": "text/html",
+                ".csv": "text/csv",
+                ".yaml": "application/x-yaml",
+                ".yml": "application/x-yaml",
+                ".pdf": "application/pdf",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".doc": "application/msword",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+            }
 
-            # Text-based files - read directly
-            if ext in (".txt", ".md", ".json", ".xml", ".html", ".csv", ".yaml", ".yml"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        extracted_text = f.read()
-                    if verbose:
-                        typer.echo(f"Read text file: {file_name} ({len(extracted_text)} characters)")
-                except UnicodeDecodeError:
-                    typer.echo(f"Warning: Could not decode {file_name} as UTF-8", err=True)
-                except IOError as e:
-                    typer.echo(f"Error reading file: {e}", err=True)
-                    raise typer.Exit(1)
-
-            # Word documents - extract text using python-docx
-            elif ext == ".docx":
-                try:
-                    from docx import Document
-                    doc = Document(file_path)
-                    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-                    extracted_text = "\n\n".join(paragraphs)
-                    if verbose:
-                        typer.echo(f"Extracted text from Word doc: {file_name} ({len(extracted_text)} characters)")
-                except ImportError:
-                    typer.echo("Error: python-docx is required for .docx files. Install with: pip install python-docx", err=True)
-                    raise typer.Exit(1)
-                except Exception as e:
-                    typer.echo(f"Error reading Word document: {e}", err=True)
-                    raise typer.Exit(1)
-
-            # PDF files - extract text using PyPDF2 or pdfplumber
-            elif ext == ".pdf":
-                try:
-                    try:
-                        import pdfplumber
-                        with pdfplumber.open(file_path) as pdf:
-                            pages_text = [page.extract_text() or "" for page in pdf.pages]
-                            extracted_text = "\n\n".join(pages_text)
-                        if verbose:
-                            typer.echo(f"Extracted text from PDF: {file_name} ({len(extracted_text)} characters)")
-                    except ImportError:
-                        try:
-                            from PyPDF2 import PdfReader
-                            reader = PdfReader(file_path)
-                            pages_text = [page.extract_text() or "" for page in reader.pages]
-                            extracted_text = "\n\n".join(pages_text)
-                            if verbose:
-                                typer.echo(f"Extracted text from PDF: {file_name} ({len(extracted_text)} characters)")
-                        except ImportError:
-                            typer.echo("Error: pdfplumber or PyPDF2 is required for .pdf files.", err=True)
-                            typer.echo("Install with: pip install pdfplumber", err=True)
-                            raise typer.Exit(1)
-                except Exception as e:
-                    typer.echo(f"Error reading PDF: {e}", err=True)
-                    raise typer.Exit(1)
-
-            else:
+            content_type = mime_types.get(ext)
+            if not content_type:
                 typer.echo(f"Error: Unsupported file type: {ext}", err=True)
-                typer.echo("Supported types: .txt, .md, .json, .xml, .html, .csv, .yaml, .docx, .pdf", err=True)
+                typer.echo(f"Supported types: {', '.join(mime_types.keys())}", err=True)
                 raise typer.Exit(1)
 
-            if not extracted_text or not extracted_text.strip():
-                typer.echo(f"Error: No text content could be extracted from {file_name}", err=True)
+            # Read file content
+            try:
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+                file_to_upload = {
+                    "name": file_name,
+                    "content": file_content,
+                    "content_type": content_type,
+                }
+                if verbose:
+                    typer.echo(f"Prepared file for upload: {file_name} ({len(file_content)} bytes, {content_type})")
+            except IOError as e:
+                typer.echo(f"Error reading file: {e}", err=True)
                 raise typer.Exit(1)
-
-            # Combine message with file content
-            combined_message = f"{message}\n\n---\n\n**File: {file_name}**\n\n{extracted_text}"
-            if verbose:
-                typer.echo(f"Combined message ({len(combined_message)} characters)")
 
         # Start conversation via Direct Line API
         if verbose:
@@ -752,32 +720,61 @@ def prompt_agent(
             if verbose:
                 typer.echo(f"Conversation started: {conv_id}")
 
-            # Step 4: Send message
+            # Step 4: Send message (with file upload if applicable)
             if verbose:
                 typer.echo(f"Sending message: \"{message}\"")
 
-            send_payload = {
-                "type": "message",
-                "from": {"id": user_id, "name": "Copilot CLI"},
-                "text": combined_message,
-            }
+            if file_to_upload:
+                # Use Direct Line upload endpoint for file attachments
+                # This uses multipart/form-data with the activity and file
+                import json as json_module
 
-            send_response = client.post(
-                f"{DIRECTLINE_URL}/conversations/{conv_id}/activities",
-                headers={
-                    "Authorization": f"Bearer {directline_token}",
-                    "Content-Type": "application/json",
-                },
-                json=send_payload,
-            )
+                activity_json = json_module.dumps({
+                    "type": "message",
+                    "from": {"id": user_id, "name": "Copilot CLI"},
+                    "text": message,
+                })
 
-            if send_response.status_code != 200:
+                # Build multipart form data
+                files = {
+                    "activity": (None, activity_json, "application/vnd.microsoft.activity"),
+                    "file": (file_to_upload["name"], file_to_upload["content"], file_to_upload["content_type"]),
+                }
+
+                if verbose:
+                    typer.echo(f"Uploading file via Direct Line: {file_to_upload['name']}")
+
+                send_response = client.post(
+                    f"{DIRECTLINE_URL}/conversations/{conv_id}/upload?userId={user_id}",
+                    headers={
+                        "Authorization": f"Bearer {directline_token}",
+                    },
+                    files=files,
+                )
+            else:
+                # Standard message without file
+                send_payload = {
+                    "type": "message",
+                    "from": {"id": user_id, "name": "Copilot CLI"},
+                    "text": message,
+                }
+
+                send_response = client.post(
+                    f"{DIRECTLINE_URL}/conversations/{conv_id}/activities",
+                    headers={
+                        "Authorization": f"Bearer {directline_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json=send_payload,
+                )
+
+            if send_response.status_code not in (200, 201, 204):
                 typer.echo(f"Error: Failed to send message (HTTP {send_response.status_code})", err=True)
                 if verbose:
                     typer.echo(f"Response: {send_response.text}", err=True)
                 raise typer.Exit(1)
 
-            activity_id = send_response.json().get("id")
+            activity_id = send_response.json().get("id") if send_response.text else None
             if verbose:
                 typer.echo(f"Message sent (Activity ID: {activity_id})")
 
