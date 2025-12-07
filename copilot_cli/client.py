@@ -677,21 +677,35 @@ class DataverseClient:
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
 
-    def get_connector(self, connector_id: str) -> dict:
+    def get_connector(self, connector_id: str, environment_id: Optional[str] = None) -> dict:
         """
         Get a specific connector by ID.
 
         Args:
             connector_id: The connector's unique identifier (e.g., shared_office365)
+            environment_id: Power Platform environment ID. If not provided,
+                            will use DATAVERSE_ENVIRONMENT_ID from config.
 
         Returns:
             Connector record from Power Apps API
         """
+        # Get environment ID from config if not provided
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file (e.g., Default-<tenant-id> or the environment GUID).\n\n"
+                    "You can find your environment ID in the Power Platform admin center."
+                )
+
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
         url = (
             f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/{connector_id}"
             f"?api-version=2016-11-01"
+            f"&$filter=environment eq '{environment_id}'"
         )
 
         headers = {
@@ -830,6 +844,67 @@ class DataverseClient:
             Connector record
         """
         return self.get(f"connectors({connector_id})")
+
+    # =========================================================================
+    # MCP Server Methods (Model Context Protocol)
+    # =========================================================================
+
+    def list_mcp_servers(self, environment_id: Optional[str] = None) -> list[dict]:
+        """
+        List MCP (Model Context Protocol) servers available as agent tools.
+
+        MCP servers are connectors that implement the Model Context Protocol,
+        allowing agents to connect to external data sources and tools.
+
+        Args:
+            environment_id: Power Platform environment ID. If not provided,
+                            will use DATAVERSE_ENVIRONMENT_ID from config.
+
+        Returns:
+            List of MCP server connector records from Power Apps API
+
+        Note:
+            MCP servers are identified by having 'mcp' in their connector ID,
+            name, or description.
+        """
+        # Get all connectors from Power Apps API
+        connectors = self.list_connectors(environment_id)
+
+        # Filter for MCP servers
+        mcp_servers = []
+        for connector in connectors:
+            name = connector.get("name", "")
+            props = connector.get("properties", {})
+            display_name = props.get("displayName", "")
+            description = (props.get("description", "") or "").lower()
+
+            # Check for MCP indicators
+            is_mcp = False
+            if "mcpserver" in name.lower():
+                is_mcp = True
+            elif "mcp" in name.lower() and name.startswith("shared_"):
+                is_mcp = True
+            elif "mcp" in display_name.lower():
+                is_mcp = True
+            elif "model context protocol" in description:
+                is_mcp = True
+
+            if is_mcp:
+                mcp_servers.append(connector)
+
+        return mcp_servers
+
+    def get_mcp_server(self, connector_id: str) -> dict:
+        """
+        Get a specific MCP server connector by ID.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_microsoftlearndocsmcpserver)
+
+        Returns:
+            MCP server connector record from Power Apps API
+        """
+        return self.get_connector(connector_id)
 
     # =========================================================================
     # Transcript Methods

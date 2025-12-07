@@ -49,6 +49,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from .commands import mcp
+    app.add_typer(mcp.app, name="mcp", help="Manage MCP (Model Context Protocol) servers")
+except ImportError:
+    pass
+
 
 @app.callback(invoke_without_command=True)
 def callback(
