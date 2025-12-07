@@ -145,6 +145,43 @@ def remove_agent(
         raise typer.Exit(exit_code)
 
 
+@app.command("publish")
+def publish_agent(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+):
+    """
+    Publish a Copilot Studio agent.
+
+    Publishing makes the latest changes to your agent available to users.
+    This includes changes to topics, knowledge sources, tools, and settings.
+
+    Note: Publishing may take a few minutes to complete.
+
+    Examples:
+        copilot agent publish fcef595a-30bb-f011-bbd3-000d3a8ba54e
+    """
+    try:
+        client = get_client()
+
+        # Get bot details first to show name
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        typer.echo(f"Publishing agent '{bot_name}'...")
+
+        result = client.publish_bot(bot_id)
+
+        if result.get("status") == "success":
+            print_success(f"Agent '{bot_name}' published successfully!")
+            if result.get("PublishedBotContentId"):
+                typer.echo(f"Published Content ID: {result['PublishedBotContentId']}")
+        else:
+            typer.echo(f"Publish completed with status: {result}")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 @app.command("update")
 def update_agent(
     bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
@@ -1774,6 +1811,111 @@ def tool_list(
             )
         else:
             print_json(formatted)
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@tool_app.command("add")
+def tool_add(
+    agent_id: str = typer.Option(
+        ...,
+        "--agentId",
+        "-a",
+        help="The parent agent's unique identifier (GUID)",
+    ),
+    target_agent_id: str = typer.Option(
+        ...,
+        "--target",
+        "-t",
+        help="The target agent's unique identifier (GUID) to connect as a tool",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Display name for the tool (defaults to target agent's name)",
+    ),
+    description: Optional[str] = typer.Option(
+        None,
+        "--description",
+        "-d",
+        help="Description of when to use this tool (for AI orchestration)",
+    ),
+    no_history: bool = typer.Option(
+        False,
+        "--no-history",
+        help="Don't pass conversation history to the connected agent",
+    ),
+):
+    """
+    Add a connected agent as a tool.
+
+    Creates an InvokeConnectedAgentTaskAction that allows this agent to
+    invoke another Copilot Studio agent as a sub-agent.
+
+    The target agent must:
+      - Be in the same environment
+      - Be published
+      - Have "Let other agents connect" enabled in settings
+
+    Examples:
+        copilot agent tool add --agentId <parent-id> --target <child-id>
+        copilot agent tool add -a <parent-id> -t <child-id> --name "Expert Reviewer"
+        copilot agent tool add -a <parent-id> -t <child-id> --no-history
+    """
+    try:
+        client = get_client()
+        component_id = client.add_connected_agent_tool(
+            bot_id=agent_id,
+            target_bot_id=target_agent_id,
+            name=name,
+            description=description,
+            pass_conversation_history=not no_history,
+        )
+
+        if component_id:
+            print_success(f"Connected agent tool created successfully!")
+            typer.echo(f"Component ID: {component_id}")
+            typer.echo("")
+            typer.echo("Note: You may need to publish the agent for changes to take effect.")
+        else:
+            typer.echo("Tool created but component ID could not be extracted.")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@tool_app.command("remove")
+def tool_remove(
+    component_id: str = typer.Argument(
+        ...,
+        help="The tool component's unique identifier (GUID)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Remove a tool from an agent.
+
+    Examples:
+        copilot agent tool remove <component-id>
+        copilot agent tool remove <component-id> --force
+    """
+    if not force:
+        confirm = typer.confirm(f"Are you sure you want to remove tool {component_id}?")
+        if not confirm:
+            typer.echo("Operation cancelled.")
+            raise typer.Exit(0)
+
+    try:
+        client = get_client()
+        client.remove_tool(component_id)
+        print_success(f"Tool {component_id} removed successfully.")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)

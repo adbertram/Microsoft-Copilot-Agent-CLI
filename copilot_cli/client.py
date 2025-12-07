@@ -297,6 +297,46 @@ class DataverseClient:
         """
         self.delete(f"bots({bot_id})")
 
+    def publish_bot(self, bot_id: str) -> dict:
+        """
+        Publish a Copilot Studio agent.
+
+        This triggers the PvaPublish action which publishes the agent,
+        making the latest changes available to users.
+
+        Args:
+            bot_id: The bot's unique identifier
+
+        Returns:
+            dict containing:
+                - PublishedBotContentId: ID of the published content
+                - status: "success" or error details
+
+        Note:
+            Publishing may take a few minutes to complete.
+            The agent must be in a valid state to publish successfully.
+        """
+        url = f"{self.api_url}/bots({bot_id})/Microsoft.Dynamics.CRM.PvaPublish"
+        headers = self._get_headers()
+
+        try:
+            response = self._http_client.post(url, headers=headers, json={}, timeout=120.0)
+            response.raise_for_status()
+            result = response.json()
+            return {
+                "status": "success",
+                "PublishedBotContentId": result.get("PublishedBotContentId", ""),
+            }
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to publish agent: HTTP {e.response.status_code}: {error_detail}")
+
     def create_bot(
         self,
         name: str,
@@ -613,6 +653,109 @@ class DataverseClient:
 
         Args:
             component_id: The knowledge source component's unique identifier
+        """
+        self.delete(f"botcomponents({component_id})")
+
+    # =========================================================================
+    # Tool Methods (Connected Agents, Flows, etc.)
+    # =========================================================================
+
+    def add_connected_agent_tool(
+        self,
+        bot_id: str,
+        target_bot_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        pass_conversation_history: bool = True,
+    ) -> str:
+        """
+        Add a connected agent tool to a bot.
+
+        This creates an InvokeConnectedAgentTaskAction component that allows
+        the bot to invoke another Copilot Studio agent as a sub-agent.
+
+        Args:
+            bot_id: The parent bot's unique identifier
+            target_bot_id: The target agent's unique identifier to connect to
+            name: Display name for the tool (defaults to target agent's name)
+            description: Description of when to use this tool (for orchestration)
+            pass_conversation_history: Whether to pass conversation history to the connected agent
+
+        Returns:
+            The created component ID
+
+        Note:
+            The target agent must:
+            - Be in the same environment
+            - Be published
+            - Have "Let other agents connect" enabled in settings
+        """
+        # Get parent bot schema name
+        bot = self.get_bot(bot_id)
+        bot_schema = bot.get("schemaname", f"cr83c_bot{bot_id[:8]}")
+
+        # Get target bot details
+        target_bot = self.get_bot(target_bot_id)
+        target_bot_name = target_bot.get("name", "Connected Agent")
+        target_bot_schema = target_bot.get("schemaname", f"cr83c_bot{target_bot_id[:8]}")
+
+        # Use target bot name if no name provided
+        if not name:
+            name = target_bot_name
+
+        # Generate clean name for schema (remove spaces and special chars)
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', name)
+        schema_name = f"{bot_schema}.InvokeConnectedAgentTaskAction.{clean_name}"
+
+        # Auto-generate description if not provided
+        if not description:
+            target_description = target_bot.get("description", "")
+            if target_description:
+                description = target_description
+            else:
+                description = f"Invoke the {target_bot_name} agent to handle specialized tasks."
+
+        # Build the connected agent tool configuration in YAML format
+        # This follows the Copilot Studio TaskDialog pattern
+        tool_yaml = f"""kind: TaskDialog
+modelDescription: {description}
+schemaName: {schema_name}
+action:
+  kind: InvokeConnectedAgentTaskAction
+  botSchemaName: {target_bot_schema}
+  passConversationHistory: {str(pass_conversation_history).lower()}
+inputType: {{}}
+outputType: {{}}"""
+
+        component_data = {
+            "componenttype": 9,  # Topic (V2)
+            "name": name,
+            "schemaname": schema_name,
+            "description": description,
+            "data": tool_yaml,
+            "parentbotid@odata.bind": f"/bots({bot_id})"
+        }
+
+        # Create the component
+        url = f"{self.api_url}/botcomponents"
+        headers = self._get_headers()
+        response = self._http_client.post(url, headers=headers, json=component_data, timeout=120.0)
+        response.raise_for_status()
+
+        # Extract component ID from OData-EntityId header
+        entity_id = response.headers.get("OData-EntityId", "")
+        if entity_id:
+            match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
+            if match:
+                return match.group(1)
+        return ""
+
+    def remove_tool(self, component_id: str) -> None:
+        """
+        Remove a tool from a bot.
+
+        Args:
+            component_id: The tool component's unique identifier
         """
         self.delete(f"botcomponents({component_id})")
 
