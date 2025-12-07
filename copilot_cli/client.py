@@ -226,6 +226,36 @@ class DataverseClient:
 
         return categorized
 
+    def get_topic(self, component_id: str) -> dict:
+        """
+        Get a specific topic by component ID.
+
+        Args:
+            component_id: The topic component's unique identifier
+
+        Returns:
+            Topic component record
+        """
+        return self.get(f"botcomponents({component_id})")
+
+    def set_topic_state(self, component_id: str, enabled: bool) -> None:
+        """
+        Enable or disable a topic.
+
+        Args:
+            component_id: The topic component's unique identifier
+            enabled: True to enable (Active), False to disable (Inactive)
+
+        Note:
+            statecode values:
+            - 0 = Active (enabled)
+            - 1 = Inactive (disabled)
+        """
+        state_data = {
+            "statecode": 0 if enabled else 1,
+        }
+        self.patch(f"botcomponents({component_id})", state_data)
+
     def delete_bot(self, bot_id: str) -> None:
         """
         Delete a bot by ID.

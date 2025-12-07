@@ -1577,5 +1577,76 @@ def topic_list(
         raise typer.Exit(exit_code)
 
 
+@topic_app.command("enable")
+def topic_enable(
+    topic_id: str = typer.Argument(
+        ...,
+        help="The topic's component ID (GUID)",
+    ),
+):
+    """
+    Enable a topic.
+
+    Sets the topic state to Active so it will be triggered during conversations.
+
+    Examples:
+        copilot agent topic enable <topic-id>
+    """
+    try:
+        client = get_client()
+
+        # Get topic name for confirmation message
+        topic = client.get_topic(topic_id)
+        topic_name = topic.get("name", topic_id)
+
+        client.set_topic_state(topic_id, enabled=True)
+        print_success(f"Topic '{topic_name}' enabled successfully.")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@topic_app.command("disable")
+def topic_disable(
+    topic_id: str = typer.Argument(
+        ...,
+        help="The topic's component ID (GUID)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Disable a topic.
+
+    Sets the topic state to Inactive so it will not be triggered during conversations.
+
+    Examples:
+        copilot agent topic disable <topic-id>
+        copilot agent topic disable <topic-id> --force
+    """
+    try:
+        client = get_client()
+
+        # Get topic name for confirmation message
+        topic = client.get_topic(topic_id)
+        topic_name = topic.get("name", topic_id)
+
+        if not force:
+            confirm = typer.confirm(f"Are you sure you want to disable topic '{topic_name}'?")
+            if not confirm:
+                typer.echo("Aborted.")
+                raise typer.Exit(0)
+
+        client.set_topic_state(topic_id, enabled=False)
+        print_success(f"Topic '{topic_name}' disabled successfully.")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 # Register topic subgroup
 app.add_typer(topic_app, name="topic")
