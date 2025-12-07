@@ -756,6 +756,46 @@ class DataverseClient:
         return self.get(f"workflows({workflow_id})")
 
     # =========================================================================
+    # Prompt Methods (AI Builder Prompts)
+    # =========================================================================
+
+    # GptPowerPrompt template ID - identifies AI Builder prompts
+    GPT_POWER_PROMPT_TEMPLATE_ID = "edfdb190-3791-45d8-9a6c-8f90a37c278a"
+
+    def list_prompts(self) -> list[dict]:
+        """
+        List AI Builder prompts available as agent tools.
+
+        AI Builder prompts are custom prompts that can be attached to
+        Copilot Studio agents as tools. They use GPT models to perform
+        specific tasks like classification, extraction, or content generation.
+
+        Returns:
+            List of prompt (msdyn_aimodel) records with GptPowerPrompt template
+
+        Note:
+            Prompts are stored as msdyn_aimodels with the GptPowerPrompt template.
+            This filters out other AI model types like Invoice Processing, etc.
+        """
+        result = self.get(
+            f"msdyn_aimodels?$filter=_msdyn_templateid_value eq {self.GPT_POWER_PROMPT_TEMPLATE_ID}"
+            f"&$orderby=msdyn_name"
+        )
+        return result.get("value", [])
+
+    def get_prompt(self, prompt_id: str) -> dict:
+        """
+        Get a specific AI Builder prompt by ID.
+
+        Args:
+            prompt_id: The prompt's unique identifier (GUID)
+
+        Returns:
+            Prompt (msdyn_aimodel) record
+        """
+        return self.get(f"msdyn_aimodels({prompt_id})")
+
+    # =========================================================================
     # Transcript Methods
     # =========================================================================
 

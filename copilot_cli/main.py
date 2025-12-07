@@ -37,6 +37,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from .commands import prompt
+    app.add_typer(prompt.app, name="prompt", help="Manage AI Builder prompts")
+except ImportError:
+    pass
+
 
 @app.callback(invoke_without_command=True)
 def callback(
