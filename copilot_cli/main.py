@@ -43,6 +43,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from .commands import restapi
+    app.add_typer(restapi.app, name="restapi", help="Manage REST API tools")
+except ImportError:
+    pass
+
 
 @app.callback(invoke_without_command=True)
 def callback(

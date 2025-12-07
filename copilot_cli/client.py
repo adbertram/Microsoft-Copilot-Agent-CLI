@@ -796,6 +796,42 @@ class DataverseClient:
         return self.get(f"msdyn_aimodels({prompt_id})")
 
     # =========================================================================
+    # REST API Methods (Custom Connectors)
+    # =========================================================================
+
+    def list_rest_apis(self) -> list[dict]:
+        """
+        List REST API tools (custom connectors) available for agents.
+
+        REST API tools are custom connectors defined with OpenAPI specifications
+        that can be attached to Copilot Studio agents as tools.
+
+        Returns:
+            List of connector records with connectortype=1 (CustomConnector)
+
+        Note:
+            These are custom connectors stored in Dataverse, not the Power Apps
+            connector catalog (which is queried by list_connectors()).
+        """
+        result = self.get(
+            "connectors?$filter=connectortype eq 1"
+            "&$orderby=displayname"
+        )
+        return result.get("value", [])
+
+    def get_rest_api(self, connector_id: str) -> dict:
+        """
+        Get a specific REST API tool (custom connector) by ID.
+
+        Args:
+            connector_id: The connector's unique identifier (GUID)
+
+        Returns:
+            Connector record
+        """
+        return self.get(f"connectors({connector_id})")
+
+    # =========================================================================
     # Transcript Methods
     # =========================================================================
 
