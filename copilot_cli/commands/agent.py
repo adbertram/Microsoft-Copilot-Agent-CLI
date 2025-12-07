@@ -1481,11 +1481,9 @@ def format_topic_for_display(topic: dict) -> dict:
     """Format a topic for display."""
     component_type = topic.get("componenttype", 0)
     type_name = TOPIC_COMPONENT_TYPE_NAMES.get(component_type, f"unknown({component_type})")
-    is_system = topic.get("_is_system", False)
 
     return {
         "name": topic.get("name"),
-        "type": "System" if is_system else "Custom",
         "component_type": type_name,
         "component_id": topic.get("botcomponentid"),
         "schema_name": topic.get("schemaname"),
@@ -1501,18 +1499,6 @@ def topic_list(
         "-a",
         help="The agent's unique identifier (GUID)",
     ),
-    system_only: bool = typer.Option(
-        False,
-        "--system",
-        "-s",
-        help="Show only system topics",
-    ),
-    custom_only: bool = typer.Option(
-        False,
-        "--custom",
-        "-c",
-        help="Show only custom topics",
-    ),
     table: bool = typer.Option(
         False,
         "--table",
@@ -1523,43 +1509,16 @@ def topic_list(
     """
     List topics for an agent.
 
-    Returns both system and custom topics by default. Use --system or --custom
-    to filter to a specific type.
-
     Examples:
         copilot agent topic list --agentId <agent-id>
         copilot agent topic list --agentId <agent-id> --table
-        copilot agent topic list --agentId <agent-id> --system
-        copilot agent topic list --agentId <agent-id> --custom --table
     """
     try:
-        # Determine filter settings
-        include_system = True
-        include_custom = True
-
-        if system_only and custom_only:
-            typer.echo("Error: Cannot specify both --system and --custom", err=True)
-            raise typer.Exit(1)
-
-        if system_only:
-            include_custom = False
-        elif custom_only:
-            include_system = False
-
         client = get_client()
-        topics = client.list_topics(
-            agent_id,
-            include_system=include_system,
-            include_custom=include_custom,
-        )
+        topics = client.list_topics(agent_id)
 
         if not topics:
-            filter_desc = ""
-            if system_only:
-                filter_desc = " system"
-            elif custom_only:
-                filter_desc = " custom"
-            typer.echo(f"No{filter_desc} topics found for this agent.")
+            typer.echo("No topics found for this agent.")
             return
 
         formatted = [format_topic_for_display(t) for t in topics]
@@ -1567,8 +1526,8 @@ def topic_list(
         if table:
             print_table(
                 formatted,
-                columns=["name", "type", "component_type", "status", "component_id"],
-                headers=["Name", "Type", "Component Type", "Status", "Component ID"],
+                columns=["name", "component_type", "status", "component_id"],
+                headers=["Name", "Component Type", "Status", "Component ID"],
             )
         else:
             print_json(formatted)

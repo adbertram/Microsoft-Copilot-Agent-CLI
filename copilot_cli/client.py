@@ -175,62 +175,27 @@ class DataverseClient:
         result = self.get(f"botcomponents?$filter=_parentbotid_value eq {bot_id}")
         return result.get("value", [])
 
-    def list_topics(
-        self,
-        bot_id: str,
-        include_system: bool = True,
-        include_custom: bool = True,
-    ) -> list[dict]:
+    def list_topics(self, bot_id: str) -> list[dict]:
         """
         List topics for a specific bot.
 
         Args:
             bot_id: The bot's unique identifier
-            include_system: Include system topics (default: True)
-            include_custom: Include custom topics (default: True)
 
         Returns:
-            List of topic component records with metadata
+            List of topic component records
 
         Note:
             Topic component types:
             - 0 = Topic (legacy)
             - 9 = Topic (V2)
-
-            System topics typically have category 'SYSTEM' or start with
-            system-related schema names.
         """
-        # Query topics (componenttype 0 = Topic, 9 = Topic V2)
         result = self.get(
             f"botcomponents?$filter=_parentbotid_value eq {bot_id} "
             f"and (componenttype eq 0 or componenttype eq 9)"
             f"&$orderby=name"
         )
-        topics = result.get("value", [])
-
-        # Categorize topics as system or custom
-        categorized = []
-        for topic in topics:
-            # Determine if system topic based on category or schema name patterns
-            category = (topic.get("category") or "").upper()
-            schema_name = (topic.get("schemaname") or "").lower()
-            name = topic.get("name") or ""
-
-            # System topic indicators - use API metadata only
-            is_system = (
-                category == "SYSTEM"
-                or schema_name.startswith("system.")
-            )
-
-            topic["_is_system"] = is_system
-
-            # Filter based on include flags
-            if is_system and include_system:
-                categorized.append(topic)
-            elif not is_system and include_custom:
-                categorized.append(topic)
-
-        return categorized
+        return result.get("value", [])
 
     def get_topic(self, component_id: str) -> dict:
         """
