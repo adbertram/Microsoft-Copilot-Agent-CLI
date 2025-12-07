@@ -175,12 +175,13 @@ class DataverseClient:
         result = self.get(f"botcomponents?$filter=_parentbotid_value eq {bot_id}")
         return result.get("value", [])
 
-    def list_topics(self, bot_id: str) -> list[dict]:
+    def list_topics(self, bot_id: str, include_tools: bool = False) -> list[dict]:
         """
         List topics for a specific bot.
 
         Args:
             bot_id: The bot's unique identifier
+            include_tools: If False (default), filters out agent tools (InvokeConnectedAgentTaskAction)
 
         Returns:
             List of topic component records
@@ -189,13 +190,73 @@ class DataverseClient:
             Topic component types:
             - 0 = Topic (legacy)
             - 9 = Topic (V2)
+
+            Agent tools have schema names containing 'InvokeConnectedAgentTaskAction'
+            and data starting with 'kind: TaskDialog'. These are filtered out by default.
         """
         result = self.get(
             f"botcomponents?$filter=_parentbotid_value eq {bot_id} "
             f"and (componenttype eq 0 or componenttype eq 9)"
             f"&$orderby=name"
         )
-        return result.get("value", [])
+        topics = result.get("value", [])
+
+        if not include_tools:
+            # Filter out agent tools (InvokeConnectedAgentTaskAction components)
+            topics = [
+                t for t in topics
+                if "InvokeConnectedAgentTaskAction" not in (t.get("schemaname") or "")
+            ]
+
+        return topics
+
+    def list_tools(self, bot_id: str, category: str = None) -> list[dict]:
+        """
+        List tools for a specific bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+            category: Optional filter by category ('agent', 'flow', 'prompt', 'connector', 'http')
+
+        Returns:
+            List of tool component records
+
+        Note:
+            Tools are Topic (V2) components with schema names containing 'TaskAction'.
+            Categories are determined by the TaskAction type:
+            - Agent: InvokeConnectedAgentTaskAction
+            - Flow: InvokeFlowTaskAction
+            - Prompt: InvokePromptTaskAction
+            - Connector: InvokeConnectorTaskAction
+            - HTTP: InvokeHttpTaskAction
+        """
+        result = self.get(
+            f"botcomponents?$filter=_parentbotid_value eq {bot_id} "
+            f"and componenttype eq 9"
+            f"&$orderby=name"
+        )
+        components = result.get("value", [])
+
+        # Filter to only tools (components with TaskAction in schema name)
+        tools = [
+            t for t in components
+            if "TaskAction" in (t.get("schemaname") or "")
+        ]
+
+        # Apply category filter if specified
+        if category:
+            category_patterns = {
+                "agent": "InvokeConnectedAgentTaskAction",
+                "flow": "InvokeFlowTaskAction",
+                "prompt": "InvokePromptTaskAction",
+                "connector": "InvokeConnectorTaskAction",
+                "http": "InvokeHttpTaskAction",
+            }
+            pattern = category_patterns.get(category.lower())
+            if pattern:
+                tools = [t for t in tools if pattern in (t.get("schemaname") or "")]
+
+        return tools
 
     def get_topic(self, component_id: str) -> dict:
         """

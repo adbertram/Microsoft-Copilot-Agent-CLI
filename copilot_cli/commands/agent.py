@@ -1651,3 +1651,133 @@ def topic_disable(
 
 # Register topic subgroup
 app.add_typer(topic_app, name="topic")
+
+
+# =============================================================================
+# Tool Commands (Agent Tools / Connected Agents)
+# =============================================================================
+
+tool_app = typer.Typer(help="Manage agent tools (connected agents)")
+
+
+def get_tool_category(schema_name: str) -> str:
+    """Determine the tool category from the schema name."""
+    if not schema_name:
+        return "Unknown"
+
+    # Check for known patterns in schema name
+    if "InvokeConnectedAgentTaskAction" in schema_name:
+        return "Agent"
+    elif "InvokeFlowTaskAction" in schema_name:
+        return "Flow"
+    elif "InvokePromptTaskAction" in schema_name:
+        return "Prompt"
+    elif "InvokeConnectorTaskAction" in schema_name or ".connector." in schema_name.lower():
+        return "Connector"
+    elif "InvokeHttpTaskAction" in schema_name:
+        return "HTTP"
+    elif "TaskAction" in schema_name:
+        # Generic task action - extract the type
+        import re
+        match = re.search(r'Invoke(\w+)TaskAction', schema_name)
+        if match:
+            return match.group(1)
+        return "Action"
+    else:
+        return "Unknown"
+
+
+def format_tool_for_display(tool: dict) -> dict:
+    """Format an agent tool for display."""
+    schema_name = tool.get("schemaname", "") or ""
+
+    # Determine category from schema
+    category = get_tool_category(schema_name)
+
+    # Extract description from data if available
+    data = tool.get("data", "") or ""
+    description = ""
+    if "modelDescription:" in data:
+        # Extract the description from YAML-like data
+        lines = data.split("\n")
+        for line in lines:
+            if line.startswith("modelDescription:"):
+                description = line.replace("modelDescription:", "").strip().strip('"')
+                # Truncate long descriptions
+                if len(description) > 80:
+                    description = description[:77] + "..."
+                break
+
+    return {
+        "name": tool.get("name"),
+        "category": category,
+        "component_id": tool.get("botcomponentid"),
+        "description": description,
+        "status": tool.get("statecode@OData.Community.Display.V1.FormattedValue", "Active"),
+    }
+
+
+@tool_app.command("list")
+def tool_list(
+    agent_id: str = typer.Option(
+        ...,
+        "--agentId",
+        "-a",
+        help="The agent's unique identifier (GUID)",
+    ),
+    category: Optional[str] = typer.Option(
+        None,
+        "--category",
+        "-c",
+        help="Filter by category: agent, flow, prompt, connector, http",
+    ),
+    table: bool = typer.Option(
+        False,
+        "--table",
+        "-t",
+        help="Display output as a formatted table instead of JSON",
+    ),
+):
+    """
+    List tools for an agent.
+
+    Tools include connected agents, flows, prompts, connectors, and HTTP actions
+    that the agent can invoke.
+
+    Categories:
+      - agent: Connected sub-agents (InvokeConnectedAgentTaskAction)
+      - flow: Power Automate flows (InvokeFlowTaskAction)
+      - prompt: AI prompts (InvokePromptTaskAction)
+      - connector: Connector actions (InvokeConnectorTaskAction)
+      - http: HTTP requests (InvokeHttpTaskAction)
+
+    Examples:
+        copilot agent tool list --agentId <agent-id>
+        copilot agent tool list --agentId <agent-id> --table
+        copilot agent tool list --agentId <agent-id> --category agent
+    """
+    try:
+        client = get_client()
+        tools = client.list_tools(agent_id, category=category)
+
+        if not tools:
+            typer.echo("No agent tools found for this agent.")
+            return
+
+        formatted = [format_tool_for_display(t) for t in tools]
+
+        if table:
+            print_table(
+                formatted,
+                columns=["name", "category", "status", "component_id"],
+                headers=["Name", "Category", "Status", "Component ID"],
+            )
+        else:
+            print_json(formatted)
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+# Register tool subgroup
+app.add_typer(tool_app, name="tool")
