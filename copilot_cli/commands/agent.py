@@ -1606,6 +1606,48 @@ def topic_enable(
         raise typer.Exit(exit_code)
 
 
+@topic_app.command("delete")
+def topic_delete(
+    topic_id: str = typer.Argument(
+        ...,
+        help="The topic's component ID (GUID)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Delete a topic.
+
+    Permanently removes the topic from the agent. This action cannot be undone.
+
+    Examples:
+        copilot agent topic delete <topic-id>
+        copilot agent topic delete <topic-id> --force
+    """
+    try:
+        client = get_client()
+
+        # Get topic name for confirmation message
+        topic = client.get_topic(topic_id)
+        topic_name = topic.get("name", topic_id)
+
+        if not force:
+            confirm = typer.confirm(f"Are you sure you want to delete topic '{topic_name}'? This cannot be undone.")
+            if not confirm:
+                typer.echo("Aborted.")
+                raise typer.Exit(0)
+
+        client.delete(f"botcomponents({topic_id})")
+        print_success(f"Topic '{topic_name}' deleted successfully.")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 @topic_app.command("disable")
 def topic_disable(
     topic_id: str = typer.Argument(
