@@ -1539,6 +1539,18 @@ def topic_list(
         "-t",
         help="Display output as a formatted table instead of JSON",
     ),
+    system: bool = typer.Option(
+        False,
+        "--system",
+        "-s",
+        help="List only system topics (built-in, managed)",
+    ),
+    custom: bool = typer.Option(
+        False,
+        "--custom",
+        "-c",
+        help="List only custom topics (user-created)",
+    ),
 ):
     """
     List topics for an agent.
@@ -1546,13 +1558,20 @@ def topic_list(
     Examples:
         copilot agent topic list --agentId <agent-id>
         copilot agent topic list --agentId <agent-id> --table
+        copilot agent topic list --agentId <agent-id> --system --table
+        copilot agent topic list --agentId <agent-id> --custom --table
     """
     try:
+        if system and custom:
+            print_error("Cannot specify both --system and --custom")
+            raise typer.Exit(1)
+
         client = get_client()
-        topics = client.list_topics(agent_id)
+        topics = client.list_topics(agent_id, system_only=system, custom_only=custom)
 
         if not topics:
-            typer.echo("No topics found for this agent.")
+            filter_type = "system " if system else "custom " if custom else ""
+            typer.echo(f"No {filter_type}topics found for this agent.")
             return
 
         formatted = [format_topic_for_display(t) for t in topics]
@@ -1678,6 +1697,273 @@ def topic_disable(
 
         client.set_topic_state(topic_id, enabled=False)
         print_success(f"Topic '{topic_name}' disabled successfully.")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@topic_app.command("get")
+def topic_get(
+    topic_id: str = typer.Argument(
+        ...,
+        help="The topic's component ID (GUID)",
+    ),
+    yaml_output: bool = typer.Option(
+        False,
+        "--yaml",
+        "-y",
+        help="Output topic content as YAML",
+    ),
+    output: str = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write YAML content to a file",
+    ),
+):
+    """
+    Get a topic by ID.
+
+    Retrieves topic details including the YAML content that defines the conversation flow.
+
+    Examples:
+        copilot agent topic get <topic-id>
+        copilot agent topic get <topic-id> --yaml
+        copilot agent topic get <topic-id> --output my-topic.yaml
+    """
+    try:
+        client = get_client()
+        topic = client.get_topic(topic_id)
+
+        content = topic.get("data", "")
+
+        if output:
+            # Write content to file
+            with open(output, "w") as f:
+                f.write(content)
+            print_success(f"Topic content written to {output}")
+        elif yaml_output:
+            # Print just the YAML content
+            if content:
+                typer.echo(content)
+            else:
+                typer.echo("# No YAML content found for this topic")
+        else:
+            # Print full topic info as JSON
+            print_json({
+                "name": topic.get("name"),
+                "component_id": topic.get("botcomponentid"),
+                "schema_name": topic.get("schemaname"),
+                "component_type": TOPIC_COMPONENT_TYPE_NAMES.get(topic.get("componenttype", 0), "unknown"),
+                "status": topic.get("statecode@OData.Community.Display.V1.FormattedValue", "Active"),
+                "is_managed": topic.get("ismanaged", False),
+                "description": topic.get("description", ""),
+                "content": content,
+            })
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@topic_app.command("create")
+def topic_create(
+    agent_id: str = typer.Option(
+        ...,
+        "--agentId",
+        "-a",
+        help="The agent's unique identifier (GUID)",
+    ),
+    name: str = typer.Option(
+        ...,
+        "--name",
+        "-n",
+        help="Display name for the topic",
+    ),
+    file: str = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Path to YAML file containing topic content",
+    ),
+    triggers: str = typer.Option(
+        None,
+        "--triggers",
+        "-t",
+        help="Comma-separated trigger phrases (for simple topics)",
+    ),
+    message: str = typer.Option(
+        None,
+        "--message",
+        "-m",
+        help="Response message (for simple topics)",
+    ),
+    description: str = typer.Option(
+        None,
+        "--description",
+        "-d",
+        help="Optional description for the topic",
+    ),
+):
+    """
+    Create a new topic for an agent.
+
+    Topics can be created in two ways:
+    1. From a YAML file with --file
+    2. Using simple parameters (--triggers and --message) for basic topics
+
+    Examples:
+        # Create from YAML file
+        copilot agent topic create --agentId <agent-id> --name "My Topic" --file topic.yaml
+
+        # Create simple topic with triggers and message
+        copilot agent topic create --agentId <agent-id> --name "Greeting" \\
+            --triggers "hello,hi,hey there" --message "Hello! How can I help?"
+    """
+    try:
+        client = get_client()
+
+        # Determine topic content
+        if file:
+            # Read content from file
+            try:
+                with open(file, "r") as f:
+                    content = f.read()
+            except FileNotFoundError:
+                print_error(f"File not found: {file}")
+                raise typer.Exit(1)
+            except Exception as e:
+                print_error(f"Error reading file: {e}")
+                raise typer.Exit(1)
+        elif triggers and message:
+            # Generate simple topic YAML
+            trigger_list = [t.strip() for t in triggers.split(",")]
+            content = client.generate_simple_topic_yaml(name, trigger_list, message)
+        else:
+            print_error("Must provide either --file or both --triggers and --message")
+            raise typer.Exit(1)
+
+        # Create the topic
+        component_id = client.create_topic(
+            bot_id=agent_id,
+            name=name,
+            content=content,
+            description=description,
+        )
+
+        if component_id:
+            print_success(f"Topic '{name}' created successfully.")
+            typer.echo(f"Component ID: {component_id}")
+        else:
+            print_success(f"Topic '{name}' created successfully.")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@topic_app.command("update")
+def topic_update(
+    topic_id: str = typer.Argument(
+        ...,
+        help="The topic's component ID (GUID)",
+    ),
+    name: str = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="New display name for the topic",
+    ),
+    file: str = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Path to YAML file containing updated topic content",
+    ),
+    triggers: str = typer.Option(
+        None,
+        "--triggers",
+        "-t",
+        help="New comma-separated trigger phrases (replaces existing triggers)",
+    ),
+    message: str = typer.Option(
+        None,
+        "--message",
+        "-m",
+        help="New response message (replaces existing message)",
+    ),
+    description: str = typer.Option(
+        None,
+        "--description",
+        "-d",
+        help="New description for the topic",
+    ),
+):
+    """
+    Update an existing topic.
+
+    You can update a topic's name, content, or description.
+    Content can be updated from a YAML file or using simple parameters.
+
+    Examples:
+        # Update from YAML file
+        copilot agent topic update <topic-id> --file updated-topic.yaml
+
+        # Update topic name
+        copilot agent topic update <topic-id> --name "New Name"
+
+        # Update triggers and message
+        copilot agent topic update <topic-id> --triggers "new phrase,another" --message "New response"
+
+        # Update multiple fields
+        copilot agent topic update <topic-id> --name "New Name" --description "Updated description"
+    """
+    try:
+        client = get_client()
+
+        # Get current topic for name and validation
+        current_topic = client.get_topic(topic_id)
+        topic_name = current_topic.get("name", topic_id)
+
+        # Check if this is a system topic
+        if current_topic.get("ismanaged", False):
+            print_error(f"Cannot update system topic '{topic_name}'. System topics are read-only.")
+            raise typer.Exit(1)
+
+        # Determine content update
+        content = None
+        if file:
+            # Read content from file
+            try:
+                with open(file, "r") as f:
+                    content = f.read()
+            except FileNotFoundError:
+                print_error(f"File not found: {file}")
+                raise typer.Exit(1)
+            except Exception as e:
+                print_error(f"Error reading file: {e}")
+                raise typer.Exit(1)
+        elif triggers or message:
+            if not (triggers and message):
+                print_error("When updating triggers/message, both --triggers and --message must be provided")
+                raise typer.Exit(1)
+            # Generate new simple topic YAML
+            display_name = name or topic_name
+            trigger_list = [t.strip() for t in triggers.split(",")]
+            content = client.generate_simple_topic_yaml(display_name, trigger_list, message)
+
+        # Check if any updates provided
+        if not any([name, content, description]):
+            print_error("No updates provided. Specify at least one field to update.")
+            raise typer.Exit(1)
+
+        # Update the topic
+        client.update_topic(
+            component_id=topic_id,
+            name=name,
+            content=content,
+            description=description,
+        )
+
+        print_success(f"Topic '{topic_name}' updated successfully.")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)

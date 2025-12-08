@@ -200,13 +200,21 @@ class DataverseClient:
         result = self.get(f"botcomponents?$filter=_parentbotid_value eq {bot_id}")
         return result.get("value", [])
 
-    def list_topics(self, bot_id: str, include_tools: bool = False) -> list[dict]:
+    def list_topics(
+        self,
+        bot_id: str,
+        include_tools: bool = False,
+        system_only: bool = False,
+        custom_only: bool = False,
+    ) -> list[dict]:
         """
         List topics for a specific bot.
 
         Args:
             bot_id: The bot's unique identifier
             include_tools: If False (default), filters out agent tools (InvokeConnectedAgentTaskAction)
+            system_only: If True, only return system topics (ismanaged=true)
+            custom_only: If True, only return custom topics (ismanaged=false)
 
         Returns:
             List of topic component records
@@ -216,14 +224,27 @@ class DataverseClient:
             - 0 = Topic (legacy)
             - 9 = Topic (V2)
 
+            System vs Custom topics:
+            - System topics (ismanaged=true): Built-in topics from managed solutions
+            - Custom topics (ismanaged=false): User-created topics
+
             Agent tools have schema names containing 'InvokeConnectedAgentTaskAction'
             and data starting with 'kind: TaskDialog'. These are filtered out by default.
         """
-        result = self.get(
-            f"botcomponents?$filter=_parentbotid_value eq {bot_id} "
-            f"and (componenttype eq 0 or componenttype eq 9)"
-            f"&$orderby=name"
-        )
+        # Build filter
+        filters = [
+            f"_parentbotid_value eq {bot_id}",
+            "(componenttype eq 0 or componenttype eq 9)"
+        ]
+
+        # Add managed status filter
+        if system_only:
+            filters.append("ismanaged eq true")
+        elif custom_only:
+            filters.append("ismanaged eq false")
+
+        filter_str = " and ".join(filters)
+        result = self.get(f"botcomponents?$filter={filter_str}&$orderby=name")
         topics = result.get("value", [])
 
         if not include_tools:
@@ -312,6 +333,227 @@ class DataverseClient:
             "statecode": 0 if enabled else 1,
         }
         self.patch(f"botcomponents({component_id})", state_data)
+
+    def create_topic(
+        self,
+        bot_id: str,
+        name: str,
+        content: str,
+        description: Optional[str] = None,
+        language: int = 1033,
+    ) -> str:
+        """
+        Create a new topic for a bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+            name: Display name for the topic
+            content: YAML content defining the topic's conversation flow
+            description: Optional description for the topic
+            language: Language code (default: 1033 for English)
+
+        Returns:
+            The created component ID
+
+        Note:
+            Topic content must be valid AdaptiveDialog YAML format.
+            Use generate_simple_topic_yaml() to create basic topic content.
+
+            Component types:
+            - 0 = Topic (legacy)
+            - 9 = Topic (V2) - used for new topics
+        """
+        # Get bot schema name for generating component schema name
+        bot = self.get_bot(bot_id)
+        bot_schema = bot.get("schemaname", f"cr83c_bot{bot_id[:8]}")
+
+        # Generate schema name from display name
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', name)
+        schema_name = f"{bot_schema}.topic.{clean_name}"
+
+        component_data = {
+            "componenttype": 9,  # Topic (V2)
+            "name": name,
+            "schemaname": schema_name,
+            "data": content,  # Topic YAML content is stored in 'data' field
+            "language": language,
+            "parentbotid@odata.bind": f"/bots({bot_id})"
+        }
+
+        if description:
+            component_data["description"] = description
+
+        # Use longer timeout for topic creation
+        url = f"{self.api_url}/botcomponents"
+        headers = self._get_headers()
+        response = self._http_client.post(url, headers=headers, json=component_data, timeout=120.0)
+        response.raise_for_status()
+
+        # Extract component ID from OData-EntityId header
+        entity_id = response.headers.get("OData-EntityId", "")
+        if entity_id:
+            match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
+            if match:
+                return match.group(1)
+        return ""
+
+    def update_topic(
+        self,
+        component_id: str,
+        name: Optional[str] = None,
+        content: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> None:
+        """
+        Update an existing topic.
+
+        Args:
+            component_id: The topic component's unique identifier
+            name: New display name for the topic
+            content: New YAML content for the topic
+            description: New description for the topic
+
+        Raises:
+            ClientError: If no updates provided or update fails
+        """
+        data = {}
+
+        if name is not None:
+            data["name"] = name
+        if content is not None:
+            data["data"] = content  # Topic YAML content is stored in 'data' field
+        if description is not None:
+            data["description"] = description
+
+        if not data:
+            raise ClientError("No updates provided. Specify at least one field to update.")
+
+        self.patch(f"botcomponents({component_id})", data)
+
+    def delete_topic(self, component_id: str) -> None:
+        """
+        Delete a topic from a bot.
+
+        Args:
+            component_id: The topic component's unique identifier
+
+        Note:
+            System topics (ismanaged=true) cannot be deleted.
+            Only custom topics (ismanaged=false) can be deleted.
+        """
+        self.delete(f"botcomponents({component_id})")
+
+    @staticmethod
+    def generate_simple_topic_yaml(
+        display_name: str,
+        trigger_phrases: list[str],
+        message: str,
+    ) -> str:
+        """
+        Generate basic topic YAML from simple inputs.
+
+        Args:
+            display_name: Display name shown in topic list
+            trigger_phrases: List of phrases that trigger this topic
+            message: Response message to show when topic is triggered
+
+        Returns:
+            YAML string for a simple message-response topic
+
+        Example:
+            yaml = DataverseClient.generate_simple_topic_yaml(
+                display_name="Greeting",
+                trigger_phrases=["hello", "hi", "hey there"],
+                message="Hello! How can I help you today?"
+            )
+        """
+        import uuid
+
+        # Generate unique IDs for nodes
+        msg_id = f"sendMessage_{uuid.uuid4().hex[:8]}"
+
+        # Build trigger phrases YAML
+        triggers_yaml = "\n".join(f"      - {phrase}" for phrase in trigger_phrases)
+
+        return f"""kind: AdaptiveDialog
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent:
+    displayName: {display_name}
+    triggerQueries:
+{triggers_yaml}
+
+  actions:
+    - kind: SendMessage
+      id: {msg_id}
+      message: {message}
+"""
+
+    @staticmethod
+    def generate_question_topic_yaml(
+        display_name: str,
+        trigger_phrases: list[str],
+        question_prompt: str,
+        variable_name: str,
+        confirmation_message: str,
+        entity_type: str = "StringPrebuiltEntity",
+    ) -> str:
+        """
+        Generate topic YAML with a question node.
+
+        Args:
+            display_name: Display name shown in topic list
+            trigger_phrases: List of phrases that trigger this topic
+            question_prompt: The question to ask the user
+            variable_name: Name for the variable to store the answer
+            confirmation_message: Message shown after user answers
+            entity_type: Entity type for validation (default: StringPrebuiltEntity)
+
+        Returns:
+            YAML string for a question-response topic
+
+        Entity Types:
+            - StringPrebuiltEntity: Free text input
+            - BooleanPrebuiltEntity: Yes/No response
+            - NumberPrebuiltEntity: Numeric input
+            - DateTimePrebuiltEntity: Date/time input
+            - EmailPrebuiltEntity: Email address
+            - PersonNamePrebuiltEntity: Person's name
+            - StatePrebuiltEntity: US state
+            - CityPrebuiltEntity: City name
+            - PhoneNumberPrebuiltEntity: Phone number
+        """
+        import uuid
+
+        # Generate unique IDs for nodes
+        question_id = f"question_{uuid.uuid4().hex[:8]}"
+        msg_id = f"sendMessage_{uuid.uuid4().hex[:8]}"
+
+        # Build trigger phrases YAML
+        triggers_yaml = "\n".join(f"      - {phrase}" for phrase in trigger_phrases)
+
+        return f"""kind: AdaptiveDialog
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent:
+    displayName: {display_name}
+    triggerQueries:
+{triggers_yaml}
+
+  actions:
+    - kind: Question
+      id: {question_id}
+      alwaysPrompt: false
+      variable: init:Topic.{variable_name}
+      prompt: {question_prompt}
+      entity: {entity_type}
+
+    - kind: SendMessage
+      id: {msg_id}
+      message: {confirmation_message}
+"""
 
     def delete_bot(self, bot_id: str) -> None:
         """
