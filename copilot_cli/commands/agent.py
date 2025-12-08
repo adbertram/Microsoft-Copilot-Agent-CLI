@@ -2605,3 +2605,185 @@ def analytics_query(
 
 # Register analytics subgroup
 app.add_typer(analytics_app, name="analytics")
+
+
+# =============================================================================
+# Authentication Commands
+# =============================================================================
+
+auth_app = typer.Typer(help="Manage agent authentication configuration")
+
+# Authentication mode mapping for display
+AUTH_MODE_NAMES = {
+    1: "None",
+    2: "Integrated",
+    3: "Custom Azure AD",
+}
+
+
+@auth_app.command("get")
+def auth_get(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+):
+    """
+    Get authentication configuration for an agent.
+
+    Shows the current authentication mode and settings.
+
+    Authentication Modes:
+      - 1 = None (no authentication required)
+      - 2 = Integrated (Microsoft Entra ID integrated)
+      - 3 = Custom Azure AD (manual configuration)
+
+    Examples:
+        copilot agent auth get fcef595a-30bb-f011-bbd3-000d3a8ba54e
+    """
+    try:
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        auth_config = client.get_bot_auth(bot_id)
+
+        typer.echo(f"\nAuthentication for '{bot_name}':\n")
+        typer.echo(f"  Mode:    {auth_config['mode']} ({auth_config['mode_name']})")
+        typer.echo(f"  Trigger: {auth_config['trigger']} ({auth_config['trigger_name']})")
+
+        if auth_config.get("configuration"):
+            typer.echo(f"  Config:  {auth_config['configuration']}")
+
+        typer.echo("")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@auth_app.command("set")
+def auth_set(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    mode: Optional[int] = typer.Option(
+        None,
+        "--mode",
+        "-m",
+        help="Authentication mode: 1=None, 2=Integrated, 3=Custom Azure AD",
+    ),
+    trigger: Optional[int] = typer.Option(
+        None,
+        "--trigger",
+        help="Authentication trigger: 0=As Needed, 1=Always",
+    ),
+):
+    """
+    Set authentication mode and/or trigger for an agent.
+
+    Authentication Modes:
+      - 1 = None (no authentication required)
+      - 2 = Integrated (Microsoft Entra ID integrated - default for new agents)
+      - 3 = Custom Azure AD (manual Microsoft Entra ID configuration)
+
+    Authentication Triggers:
+      - 0 = As Needed (authenticate only when required)
+      - 1 = Always (require authentication for all conversations)
+
+    Examples:
+        copilot agent auth set <bot-id> --mode 1
+        copilot agent auth set <bot-id> --mode 1 --trigger 0
+        copilot agent auth set <bot-id> --trigger 0
+    """
+    try:
+        if mode is None and trigger is None:
+            typer.echo("Error: Must specify at least --mode or --trigger", err=True)
+            raise typer.Exit(1)
+
+        if mode is not None and mode not in AUTH_MODE_NAMES:
+            typer.echo(f"Error: Invalid mode {mode}. Valid modes: 1=None, 2=Integrated, 3=Custom Azure AD", err=True)
+            raise typer.Exit(1)
+
+        if trigger is not None and trigger not in (0, 1):
+            typer.echo(f"Error: Invalid trigger {trigger}. Valid triggers: 0=As Needed, 1=Always", err=True)
+            raise typer.Exit(1)
+
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        updates = []
+        if mode is not None:
+            updates.append(f"mode to {mode} ({AUTH_MODE_NAMES[mode]})")
+        if trigger is not None:
+            trigger_name = "As Needed" if trigger == 0 else "Always"
+            updates.append(f"trigger to {trigger} ({trigger_name})")
+
+        typer.echo(f"Setting authentication for '{bot_name}': {', '.join(updates)}...")
+
+        client.update_bot_auth(bot_id=bot_id, mode=mode, trigger=trigger)
+
+        print_success(f"Authentication updated for '{bot_name}'!")
+        typer.echo("")
+        typer.echo("Note: You may need to republish the agent for changes to take effect.")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@auth_app.command("list")
+def auth_list(
+    table: bool = typer.Option(
+        False,
+        "--table",
+        "-t",
+        help="Display output as a formatted table instead of JSON",
+    ),
+):
+    """
+    List authentication modes for all agents.
+
+    Shows the authentication mode for each agent in the environment.
+
+    Examples:
+        copilot agent auth list
+        copilot agent auth list --table
+    """
+    try:
+        client = get_client()
+        bots = client.list_bots(
+            select=["name", "botid", "authenticationmode", "statecode"]
+        )
+
+        if not bots:
+            typer.echo("No agents found.")
+            return
+
+        # Format for display
+        formatted = []
+        for bot in bots:
+            auth_mode = bot.get("authenticationmode", 2)
+            formatted.append({
+                "name": bot.get("name"),
+                "bot_id": bot.get("botid"),
+                "auth_mode": auth_mode,
+                "auth_mode_name": AUTH_MODE_NAMES.get(auth_mode, f"Unknown({auth_mode})"),
+            })
+
+        if table:
+            print_table(
+                formatted,
+                columns=["name", "auth_mode", "auth_mode_name", "bot_id"],
+                headers=["Name", "Mode", "Mode Name", "Bot ID"],
+            )
+        else:
+            print_json(formatted)
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+# Register auth subgroup
+app.add_typer(auth_app, name="auth")

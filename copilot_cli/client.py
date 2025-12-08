@@ -751,6 +751,97 @@ beginDialog:
         self.patch(f"bots({bot_id})", bot_data)
 
     # =========================================================================
+    # Authentication Methods
+    # =========================================================================
+
+    # Authentication mode constants
+    AUTH_MODE_NONE = 1
+    AUTH_MODE_INTEGRATED = 2
+    AUTH_MODE_CUSTOM_AZURE_AD = 3
+
+    AUTH_MODE_NAMES = {
+        1: "None",
+        2: "Integrated",
+        3: "Custom Azure AD",
+    }
+
+    def get_bot_auth(self, bot_id: str) -> dict:
+        """
+        Get authentication configuration for a bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+
+        Returns:
+            Dict containing authentication settings:
+                - mode: Authentication mode integer (1=None, 2=Integrated, 3=Custom Azure AD)
+                - mode_name: Human-readable authentication mode name
+                - trigger: Authentication trigger (0=As Needed, 1=Always)
+                - configuration: Authentication configuration JSON (if any)
+        """
+        bot = self.get_bot(bot_id)
+
+        auth_mode = bot.get("authenticationmode", 2)
+        auth_trigger = bot.get("authenticationtrigger", 1)
+        auth_config = bot.get("authenticationconfiguration")
+
+        return {
+            "mode": auth_mode,
+            "mode_name": self.AUTH_MODE_NAMES.get(auth_mode, f"Unknown({auth_mode})"),
+            "trigger": auth_trigger,
+            "trigger_name": "Always" if auth_trigger == 1 else "As Needed",
+            "configuration": json.loads(auth_config) if auth_config else None,
+        }
+
+    def update_bot_auth(
+        self,
+        bot_id: str,
+        mode: Optional[int] = None,
+        trigger: Optional[int] = None,
+        configuration: Optional[dict] = None,
+    ) -> None:
+        """
+        Update authentication configuration for a bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+            mode: Authentication mode:
+                - 1 = None (no authentication required)
+                - 2 = Integrated (Microsoft Entra ID integrated)
+                - 3 = Custom Azure AD (manual Microsoft Entra ID configuration)
+            trigger: Authentication trigger:
+                - 0 = As Needed (authenticate only when required)
+                - 1 = Always (require authentication for all conversations)
+            configuration: Authentication configuration dict (for Custom Azure AD mode)
+
+        Note:
+            When changing to Custom Azure AD (mode 3), you may also need to configure
+            the authentication settings via the Copilot Studio portal, including:
+            - Service provider settings
+            - Client ID and tenant ID
+            - Token exchange URL
+        """
+        bot_data = {}
+
+        if mode is not None:
+            if mode not in self.AUTH_MODE_NAMES:
+                raise ClientError(f"Invalid authentication mode: {mode}. Valid modes: 1=None, 2=Integrated, 3=Custom Azure AD")
+            bot_data["authenticationmode"] = mode
+
+        if trigger is not None:
+            if trigger not in (0, 1):
+                raise ClientError(f"Invalid authentication trigger: {trigger}. Valid triggers: 0=As Needed, 1=Always")
+            bot_data["authenticationtrigger"] = trigger
+
+        if configuration is not None:
+            bot_data["authenticationconfiguration"] = json.dumps(configuration)
+
+        if not bot_data:
+            raise ClientError("No updates provided. Specify at least one field to update.")
+
+        self.patch(f"bots({bot_id})", bot_data)
+
+    # =========================================================================
     # Application Insights Methods
     # =========================================================================
 
@@ -1531,6 +1622,197 @@ outputType: {{}}"""
             Prompt (msdyn_aimodel) record
         """
         return self.get(f"msdyn_aimodels({prompt_id})")
+
+    def get_prompt_configuration(self, prompt_id: str, active_only: bool = True) -> dict:
+        """
+        Get the AI Configuration for a prompt, including the prompt text.
+
+        Args:
+            prompt_id: The prompt's unique identifier (GUID)
+            active_only: If True (default), return the published/active configuration.
+                        If False, return the most recently modified configuration.
+
+        Returns:
+            Dict containing:
+                - configuration_id: The AI configuration ID
+                - prompt_text: The full prompt text (all literal parts concatenated)
+                - prompt_parts: The raw prompt parts array
+                - custom_configuration: The full custom configuration JSON
+                - model_type: The GPT model type (e.g., gpt-41-mini)
+                - status: Status code (0=Draft, 7=Published, etc.)
+                - version: Version string (major.minor)
+
+        Raises:
+            ClientError: If no configuration found for the prompt
+        """
+        import json
+
+        # Get AI configurations for this model
+        # Type 190690001 = RunConfiguration (the ones with prompt text)
+        result = self.get(
+            f"msdyn_aiconfigurations?"
+            f"$filter=_msdyn_aimodelid_value eq {prompt_id} and msdyn_type eq 190690001"
+            f"&$orderby=modifiedon desc"
+        )
+        configs = result.get("value", [])
+
+        if not configs:
+            raise ClientError(f"No AI configuration found for prompt {prompt_id}")
+
+        # Find the appropriate config
+        config = None
+        if active_only:
+            # Look for published config (statuscode=7)
+            for c in configs:
+                if c.get("statuscode") == 7:
+                    config = c
+                    break
+            # Fall back to most recent if no published config
+            if not config:
+                config = configs[0]
+        else:
+            config = configs[0]
+
+        config_id = config.get("msdyn_aiconfigurationid")
+        custom_config_str = config.get("msdyn_customconfiguration", "")
+        status = config.get("statuscode", 0)
+        major = config.get("msdyn_majoriterationnumber", 1)
+        minor = config.get("msdyn_minoriterationnumber", 0)
+
+        # Parse the custom configuration JSON
+        prompt_text = ""
+        prompt_parts = []
+        model_type = ""
+        custom_config = {}
+
+        if custom_config_str:
+            try:
+                custom_config = json.loads(custom_config_str)
+                prompt_parts = custom_config.get("prompt", [])
+
+                # Extract just the literal text parts to form the prompt text
+                text_parts = []
+                for part in prompt_parts:
+                    if part.get("type") == "literal":
+                        text_parts.append(part.get("text", ""))
+
+                prompt_text = "".join(text_parts)
+
+                # Get model type
+                model_params = custom_config.get("modelParameters", {})
+                model_type = model_params.get("modelType", "")
+
+            except json.JSONDecodeError:
+                pass
+
+        return {
+            "configuration_id": config_id,
+            "prompt_text": prompt_text,
+            "prompt_parts": prompt_parts,
+            "custom_configuration": custom_config,
+            "model_type": model_type,
+            "status": status,
+            "version": f"{major}.{minor}",
+        }
+
+    def update_prompt(
+        self,
+        prompt_id: str,
+        prompt_text: Optional[str] = None,
+        model_type: Optional[str] = None,
+        publish: bool = True,
+    ) -> None:
+        """
+        Update an AI Builder prompt's text or model type.
+
+        This method handles the full publish workflow:
+        1. Finds the active (published) configuration
+        2. Unpublishes it if currently published
+        3. Updates the configuration
+        4. Republishes it (if publish=True)
+
+        Args:
+            prompt_id: The prompt's unique identifier (GUID)
+            prompt_text: New prompt text (replaces all literal parts with single text)
+            model_type: New model type (e.g., gpt-41-mini, gpt-4o, gpt-4o-mini)
+            publish: If True (default), republish after updating
+
+        Raises:
+            ClientError: If update fails or no configuration found
+        """
+        import json
+        import time
+
+        if not prompt_text and not model_type:
+            raise ClientError("Must provide prompt_text or model_type to update")
+
+        # Get current active configuration
+        config_info = self.get_prompt_configuration(prompt_id, active_only=True)
+        config_id = config_info["configuration_id"]
+        custom_config = config_info["custom_configuration"]
+        status = config_info["status"]
+        version = config_info["version"]
+
+        if not custom_config:
+            raise ClientError("No custom configuration found for prompt")
+
+        # If published, unpublish first
+        if status == 7:  # Published
+            self.post(
+                f"msdyn_aiconfigurations({config_id})/Microsoft.Dynamics.CRM.UnpublishAIConfiguration",
+                {"version": version}
+            )
+            # Wait for unpublish to complete
+            for _ in range(15):
+                config = self.get(f"msdyn_aiconfigurations({config_id})")
+                if config.get("statuscode") != 4:  # 4 = Unpublishing
+                    break
+                time.sleep(1)
+
+        # Update prompt text if provided
+        if prompt_text is not None:
+            # Get existing input variables from prompt parts
+            input_vars = [
+                part for part in custom_config.get("prompt", [])
+                if part.get("type") == "inputVariable"
+            ]
+
+            # Create new prompt parts with the new text
+            new_prompt_parts = [{"type": "literal", "text": prompt_text}]
+
+            # Append any input variables that were in the original
+            for var in input_vars:
+                new_prompt_parts.append(var)
+
+            custom_config["prompt"] = new_prompt_parts
+
+        # Update model type if provided
+        if model_type is not None:
+            if "modelParameters" not in custom_config:
+                custom_config["modelParameters"] = {}
+            custom_config["modelParameters"]["modelType"] = model_type
+
+        # Update the configuration
+        update_data = {
+            "msdyn_customconfiguration": json.dumps(custom_config)
+        }
+        self.patch(f"msdyn_aiconfigurations({config_id})", update_data)
+
+        # Republish if requested
+        if publish:
+            self.post(
+                f"msdyn_aiconfigurations({config_id})/Microsoft.Dynamics.CRM.PublishAIConfiguration",
+                {"version": version}
+            )
+            # Wait for publish to complete
+            for _ in range(30):
+                config = self.get(f"msdyn_aiconfigurations({config_id})")
+                current_status = config.get("statuscode")
+                if current_status == 7:  # Published
+                    break
+                if current_status in [10, 11, 12, 13]:  # Failed states
+                    raise ClientError(f"Publish failed with status {current_status}")
+                time.sleep(1)
 
     # =========================================================================
     # REST API Methods (Custom Connectors)
