@@ -2148,5 +2148,174 @@ def analytics_update(
         raise typer.Exit(exit_code)
 
 
+def _convert_timespan(timespan: str) -> str:
+    """
+    Convert user-friendly timespan to ISO 8601 duration.
+
+    Examples:
+        1h → PT1H
+        24h → PT24H
+        7d → P7D
+        30d → P30D
+    """
+    timespan = timespan.lower().strip()
+
+    # Already ISO 8601 format
+    if timespan.startswith("p"):
+        return timespan.upper()
+
+    # Parse number and unit
+    import re
+    match = re.match(r"^(\d+)([hd])$", timespan)
+    if not match:
+        raise ValueError(f"Invalid timespan format: {timespan}. Use format like '24h' or '7d'")
+
+    value = match.group(1)
+    unit = match.group(2)
+
+    if unit == "h":
+        return f"PT{value}H"
+    elif unit == "d":
+        return f"P{value}D"
+
+    raise ValueError(f"Unknown time unit: {unit}")
+
+
+@analytics_app.command("query")
+def analytics_query(
+    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    timespan: str = typer.Option(
+        "24h",
+        "--timespan",
+        "-t",
+        help="Time range to query (e.g., 1h, 24h, 7d, 30d)",
+    ),
+    events_only: bool = typer.Option(
+        False,
+        "--events",
+        "-e",
+        help="Query only customEvents table (faster)",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw JSON response",
+    ),
+    limit: int = typer.Option(
+        100,
+        "--limit",
+        "-l",
+        help="Maximum number of rows to display",
+    ),
+):
+    """
+    Query Application Insights telemetry for an agent.
+
+    Retrieves telemetry data from the Application Insights instance
+    configured for this agent. Requires App Insights to be enabled.
+
+    Examples:
+        copilot agent analytics query <bot-id>
+        copilot agent analytics query <bot-id> --timespan 7d
+        copilot agent analytics query <bot-id> --events --json
+        copilot agent analytics query <bot-id> -t 1h -l 50
+    """
+    try:
+        # Convert timespan to ISO 8601
+        try:
+            iso_timespan = _convert_timespan(timespan)
+        except ValueError as e:
+            typer.echo(f"Error: {e}")
+            raise typer.Exit(1)
+
+        client = get_client()
+
+        # Get bot name for display
+        bot = client.get_bot(bot_id)
+        bot_name = bot.get("name", bot_id)
+
+        typer.echo(f"Querying Application Insights for '{bot_name}'...")
+        typer.echo(f"Time range: {timespan}")
+        typer.echo("")
+
+        # Execute query
+        result = client.get_bot_telemetry(
+            bot_id=bot_id,
+            timespan=iso_timespan,
+            events_only=events_only,
+        )
+
+        # Handle JSON output
+        if json_output:
+            print_json(result)
+            return
+
+        # Parse and display results
+        tables = result.get("tables", [])
+        if not tables:
+            typer.echo("No telemetry data found for the specified time range.")
+            return
+
+        table = tables[0]
+        columns = [col["name"] for col in table.get("columns", [])]
+        rows = table.get("rows", [])
+
+        if not rows:
+            typer.echo("No telemetry data found for the specified time range.")
+            return
+
+        typer.echo(f"Found {len(rows)} records (showing up to {limit}):")
+        typer.echo("")
+
+        # Display as formatted output
+        displayed = 0
+        for row in rows:
+            if displayed >= limit:
+                typer.echo(f"\n... and {len(rows) - limit} more records. Use --limit to see more.")
+                break
+
+            # Create a dict for this row
+            row_data = dict(zip(columns, row))
+
+            timestamp = row_data.get("timestamp", "")
+            if timestamp:
+                # Format timestamp for display
+                timestamp = timestamp.replace("T", " ").split(".")[0]
+
+            table_name = row_data.get("_table", "event")
+            name = row_data.get("name", "")
+            message = row_data.get("message", "")
+
+            # Format the line
+            line = f"[{timestamp}] [{table_name}]"
+            if name:
+                line += f" {name}"
+            if message:
+                line += f": {message}"
+
+            typer.echo(line)
+
+            # Show custom dimensions if present (condensed)
+            custom_dims = row_data.get("customDimensions")
+            if custom_dims and isinstance(custom_dims, dict):
+                # Show key fields from customDimensions
+                key_fields = ["TopicName", "Kind", "text", "channelId", "fromName"]
+                dim_parts = []
+                for field in key_fields:
+                    if field in custom_dims and custom_dims[field]:
+                        dim_parts.append(f"{field}={custom_dims[field]}")
+                if dim_parts:
+                    typer.echo(f"    {', '.join(dim_parts)}")
+
+            displayed += 1
+
+        typer.echo("")
+        print_success(f"Query complete. Retrieved {len(rows)} records.")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 # Register analytics subgroup
 app.add_typer(analytics_app, name="analytics")

@@ -7,6 +7,31 @@ import httpx
 from .config import get_config
 
 
+def parse_connection_string(connection_string: str) -> dict[str, str]:
+    """
+    Parse an Application Insights connection string into a dictionary.
+
+    Connection strings have the format:
+    InstrumentationKey=xxx;IngestionEndpoint=xxx;LiveEndpoint=xxx;ApplicationId=xxx
+
+    Args:
+        connection_string: The App Insights connection string
+
+    Returns:
+        Dict with keys like 'InstrumentationKey', 'ApplicationId', etc.
+    """
+    result = {}
+    if not connection_string:
+        return result
+
+    for part in connection_string.split(";"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            result[key.strip()] = value.strip()
+
+    return result
+
+
 class ClientError(Exception):
     """Exception raised for client initialization or API errors."""
     pass
@@ -570,6 +595,231 @@ class DataverseClient:
         }
 
         self.patch(f"bots({bot_id})", bot_data)
+
+    def get_app_insights_workspace_id(self, app_id: str) -> str:
+        """
+        Get Log Analytics workspace ID from Application Insights ApplicationId.
+
+        This method queries Azure Resource Manager to find the App Insights resource
+        and extract its linked Log Analytics workspace ID.
+
+        Args:
+            app_id: The ApplicationId from the App Insights connection string
+
+        Returns:
+            The Log Analytics workspace ID (GUID)
+
+        Raises:
+            ClientError: If the App Insights resource cannot be found
+        """
+        # Get ARM token
+        arm_token = get_access_token_from_azure_cli("https://management.azure.com")
+
+        # List all subscriptions to search for the App Insights resource
+        headers = {
+            "Authorization": f"Bearer {arm_token}",
+            "Content-Type": "application/json",
+        }
+
+        # First, get subscriptions
+        subs_url = "https://management.azure.com/subscriptions?api-version=2022-12-01"
+        try:
+            subs_response = self._http_client.get(subs_url, headers=headers, timeout=30.0)
+            subs_response.raise_for_status()
+            subscriptions = subs_response.json().get("value", [])
+        except Exception as e:
+            raise ClientError(f"Failed to list subscriptions: {e}")
+
+        # Search each subscription for the App Insights resource
+        for sub in subscriptions:
+            sub_id = sub.get("subscriptionId")
+            if not sub_id:
+                continue
+
+            # List App Insights components in this subscription
+            components_url = (
+                f"https://management.azure.com/subscriptions/{sub_id}"
+                f"/providers/Microsoft.Insights/components"
+                f"?api-version=2020-02-02"
+            )
+
+            try:
+                response = self._http_client.get(components_url, headers=headers, timeout=30.0)
+                if response.status_code == 200:
+                    components = response.json().get("value", [])
+                    for component in components:
+                        # Check if this is the matching App Insights resource
+                        if component.get("properties", {}).get("AppId") == app_id:
+                            # Found it! Extract workspace ID
+                            workspace_resource_id = component.get("properties", {}).get("WorkspaceResourceId")
+                            if workspace_resource_id:
+                                # Extract workspace ID from resource path
+                                # Format: /subscriptions/.../workspaces/{workspace-name}
+                                # We need to get the workspace GUID from the workspace resource
+                                workspace_url = (
+                                    f"https://management.azure.com{workspace_resource_id}"
+                                    f"?api-version=2023-09-01"
+                                )
+                                ws_response = self._http_client.get(workspace_url, headers=headers, timeout=30.0)
+                                if ws_response.status_code == 200:
+                                    workspace = ws_response.json()
+                                    # The customerId property is the workspace ID (GUID)
+                                    workspace_id = workspace.get("properties", {}).get("customerId")
+                                    if workspace_id:
+                                        return workspace_id
+                            raise ClientError(
+                                f"App Insights resource found but no Log Analytics workspace linked. "
+                                f"Please link the App Insights resource to a Log Analytics workspace."
+                            )
+            except httpx.HTTPStatusError:
+                continue  # Try next subscription
+
+        raise ClientError(
+            f"Could not find Application Insights resource with ApplicationId: {app_id}. "
+            f"Ensure you have access to the subscription containing this resource."
+        )
+
+    def query_app_insights(
+        self,
+        app_id: str,
+        query: str,
+        timespan: str = "P1D"
+    ) -> dict:
+        """
+        Execute a KQL query against Application Insights.
+
+        Args:
+            app_id: The Application Insights App ID (from connection string)
+            query: KQL query string
+            timespan: ISO 8601 duration (e.g., "P1D" for 1 day, "PT24H" for 24 hours)
+
+        Returns:
+            Query results containing tables with columns and rows
+
+        Raises:
+            ClientError: If the query fails
+        """
+        # Get Application Insights API token
+        ai_token = get_access_token_from_azure_cli("https://api.applicationinsights.io")
+
+        url = f"https://api.applicationinsights.io/v1/apps/{app_id}/query"
+
+        headers = {
+            "Authorization": f"Bearer {ai_token}",
+            "Content-Type": "application/json",
+        }
+
+        body = {
+            "query": query,
+            "timespan": timespan,
+        }
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=body, timeout=60.0)
+            response.raise_for_status()
+            result = response.json()
+
+            # Check for query errors (semantic errors like missing tables)
+            if "error" in result:
+                error = result["error"]
+                # Check if it's a "table not found" error
+                inner = error.get("innererror", {})
+                if "SEM0100" in str(inner) or "Failed to resolve table" in str(inner):
+                    # Return empty result instead of error - no telemetry data yet
+                    return {"tables": [{"name": "PrimaryResult", "columns": [], "rows": []}]}
+                raise ClientError(f"Query error: {error.get('message', str(error))}")
+
+            return result
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_msg = error_body["error"].get("message", "")
+                    inner = error_body["error"].get("innererror", {})
+                    # Check if it's a "table not found" error (400 Bad Request)
+                    if "SEM0100" in str(inner) or "Failed to resolve table" in str(inner):
+                        # Return empty result - no telemetry data yet
+                        return {"tables": [{"name": "PrimaryResult", "columns": [], "rows": []}]}
+                    error_detail = error_msg or str(error_body)
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Application Insights query failed: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Query request failed: {e}")
+
+    def get_bot_telemetry(
+        self,
+        bot_id: str,
+        timespan: str = "P1D",
+        events_only: bool = False,
+    ) -> dict:
+        """
+        Get telemetry data for a bot from Application Insights.
+
+        This method retrieves the bot's App Insights configuration and queries
+        the telemetry data directly using the Application Insights API.
+
+        Args:
+            bot_id: The bot's unique identifier
+            timespan: ISO 8601 duration (e.g., "P1D" for 1 day, "PT1H" for 1 hour)
+            events_only: If True, only query customEvents table
+
+        Returns:
+            Query results containing telemetry data
+
+        Raises:
+            ClientError: If App Insights is not configured or query fails
+        """
+        # Get bot's App Insights config
+        config = self.get_bot_app_insights(bot_id)
+        if not config["enabled"]:
+            raise ClientError(
+                "Application Insights is not configured for this agent. "
+                "Use 'copilot agent analytics enable' to configure it first."
+            )
+
+        # Parse ApplicationId from connection string
+        connection_string = config["connectionString"]
+        app_id = parse_connection_string(connection_string).get("ApplicationId")
+        if not app_id:
+            raise ClientError(
+                "Could not extract ApplicationId from connection string. "
+                "Please check the App Insights configuration."
+            )
+
+        # Build KQL query
+        if events_only:
+            query = """
+customEvents
+| project timestamp, name, customDimensions, customMeasurements
+| order by timestamp desc
+"""
+        else:
+            query = """
+customEvents
+| extend _table = "customEvents"
+| project timestamp, _table, name, message = "", customDimensions
+| union (
+    requests
+    | extend _table = "requests"
+    | project timestamp, _table, name, message = "", customDimensions
+)
+| union (
+    traces
+    | extend _table = "traces"
+    | project timestamp, _table, name = "", message, customDimensions
+)
+| union (
+    exceptions
+    | extend _table = "exceptions"
+    | project timestamp, _table, name = type, message = outerMessage, customDimensions
+)
+| order by timestamp desc
+"""
+
+        # Execute query using app_id directly (not workspace ID)
+        return self.query_app_insights(app_id, query, timespan)
 
     def list_knowledge_sources(self, bot_id: str, source_type: Optional[str] = None) -> list[dict]:
         """
