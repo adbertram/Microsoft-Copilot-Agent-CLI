@@ -84,7 +84,14 @@ def handle_api_error(error: Exception) -> int:
     Returns:
         int: Exit code (1 for general errors, 2 for auth errors)
     """
+    from .client import ClientError
+
     error_str = str(error)
+
+    # For ClientError, always show the full message as it's intentional
+    if isinstance(error, ClientError):
+        print_error(error_str)
+        return 1
 
     # Check for authentication errors
     if "401" in error_str or "unauthorized" in error_str.lower():
@@ -93,8 +100,8 @@ def handle_api_error(error: Exception) -> int:
         )
         return 2
 
-    # Check for not found errors
-    if "404" in error_str or "not found" in error_str.lower():
+    # Check for not found errors (only for HTTP 404, not general "not found" text)
+    if "404" in error_str:
         print_error("Resource not found.")
         return 1
 

@@ -1848,14 +1848,20 @@ action:
 
         connector_id, operation_id = tool_id.split(':', 1)
 
-        # Check if operation has internal visibility (not allowed)
+        # Validate operation exists and get its details from swagger
+        operation_details = None
+        operation_description = None
         try:
             connector = self.get_connector(connector_id)
             swagger = connector.get('properties', {}).get('swagger', {})
             paths = swagger.get('paths', {})
+
+            # Find the operation in swagger
             for path, methods in paths.items():
                 for method, details in methods.items():
                     if details.get('operationId') == operation_id:
+                        operation_details = details
+                        operation_description = details.get('description') or details.get('summary', '')
                         visibility = details.get('x-ms-visibility', '')
                         if visibility == 'internal':
                             raise ClientError(
@@ -1864,10 +1870,34 @@ action:
                                 f"Use 'copilot connectors get {connector_id}' to see available operations."
                             )
                         break
+                if operation_details:
+                    break
+
+            # If operation not found, reject with helpful error
+            if not operation_details:
+                # Get list of available operations for error message
+                available_ops = []
+                for path, methods in paths.items():
+                    for method, details in methods.items():
+                        op_id = details.get('operationId', '')
+                        visibility = details.get('x-ms-visibility', '')
+                        if op_id and visibility != 'internal':
+                            available_ops.append(op_id)
+
+                # Suggest similar operations
+                similar = [op for op in available_ops if operation_id.lower().replace('_', '') in op.lower().replace('_', '')
+                           or op.lower().replace('_', '') in operation_id.lower().replace('_', '')]
+
+                error_msg = f"Operation '{operation_id}' not found in connector '{connector_id}'."
+                if similar:
+                    error_msg += f"\n\nDid you mean one of these?\n  " + "\n  ".join(similar[:5])
+                error_msg += f"\n\nUse 'copilot connectors get {connector_id}' to see all available operations."
+                raise ClientError(error_msg)
+
         except ClientError:
             raise
-        except Exception:
-            pass  # If we can't check visibility, proceed anyway
+        except Exception as e:
+            raise ClientError(f"Failed to validate operation: {e}")
 
         # Build full connection reference: {bot_schema}.{connector_id}.{connection_id}
         # connection_ref should be the connection GUID
@@ -1880,10 +1910,10 @@ action:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
         schema_name = f"{bot_schema}.InvokeConnectorTaskAction.{clean_name}"
 
-        # Auto-generate description if not provided - try to get from connector swagger
+        # Use swagger description if not provided by user
         resolved_description = description
         if not resolved_description:
-            resolved_description = f"Invoke {operation_id} operation from {connector_id} connector."
+            resolved_description = operation_description or f"Invoke {operation_id} operation from {connector_id} connector."
 
         # Build outputs from connector response schema
         outputs_yaml = self._build_connector_outputs_yaml(connector_id, operation_id)
