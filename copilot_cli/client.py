@@ -1580,6 +1580,7 @@ outputType: {{}}"""
         method: str = "GET",
         headers: Optional[dict] = None,
         body: Optional[str] = None,
+        force: bool = False,
     ) -> str:
         """
         Add a tool to a bot.
@@ -1597,6 +1598,7 @@ outputType: {{}}"""
             method: HTTP method (for http)
             headers: HTTP headers (for http)
             body: Request body template (for http)
+            force: Force adding tool even if operation has internal visibility
 
         Returns:
             The created component ID
@@ -1632,6 +1634,7 @@ outputType: {{}}"""
             method=method,
             headers=headers,
             body=body,
+            force=force,
         )
 
         component_data = {
@@ -1832,7 +1835,8 @@ action:
         self, bot_id: str, bot_schema: str, tool_id: str,
         name: Optional[str], description: Optional[str],
         inputs: Optional[dict], outputs: Optional[dict],
-        connection_ref: Optional[str] = None, **kwargs
+        connection_ref: Optional[str] = None,
+        force: bool = False, **kwargs
     ) -> tuple[str, str, str, str]:
         """Generate YAML for InvokeConnectorTaskAction."""
         # Parse connector_id:operation_id format
@@ -1863,11 +1867,11 @@ action:
                         operation_details = details
                         operation_description = details.get('description') or details.get('summary', '')
                         visibility = details.get('x-ms-visibility', '')
-                        if visibility == 'internal':
+                        if visibility == 'internal' and not force:
                             raise ClientError(
                                 f"Operation '{operation_id}' has internal visibility and cannot be used as a tool.\n"
                                 f"Internal operations are not exposed in the Copilot Studio UI and may not work correctly.\n"
-                                f"Use 'copilot connectors get {connector_id}' to see available operations."
+                                f"Use --force to add anyway, or use 'copilot connectors get {connector_id}' to see available operations."
                             )
                         break
                 if operation_details:

@@ -1997,6 +1997,12 @@ def tool_add(
         "--body",
         help="Request body template (for http tools)",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force adding tool even if operation has internal visibility (may not work correctly)",
+    ),
 ):
     """
     Add a tool to an agent.
@@ -2145,6 +2151,7 @@ def tool_add(
             method=method,
             headers=headers_dict,
             body=body,
+            force=force,
         )
 
         if component_id:
