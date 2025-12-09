@@ -23,30 +23,33 @@ app.add_typer(mcp.app, name="mcp", help="Manage MCP servers")
 COMPONENT_TYPE_CONNECTOR = 372  # Custom Connector (connectors table)
 COMPONENT_TYPE_AI_MODEL = None  # Will be looked up dynamically for msdyn_aimodel
 
+# AIPlugin subtype mapping
+AIPLUGIN_SUBTYPE_LABELS = {
+    0: "Dataverse",
+    1: "Certified Connector",
+    2: "QA",
+    3: "Flow",
+    4: "Prompt",
+    5: "Conversational",
+    6: "Custom Api",
+    7: "Rest Api",
+    8: "Custom Connector",
+}
 
-def format_unified_tool(tool: dict, tool_type: str) -> dict:
+
+def format_unified_tool(tool: dict, tool_type: str, subtype: Optional[str] = None) -> dict:
     """Format a tool for unified display with installed and managed status."""
     if tool_type == "prompt":
         is_managed = tool.get("ismanaged", False)
         return {
             "name": tool.get("msdyn_name", ""),
             "type": "Prompt",
+            "subtype": "-",
             "publisher": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
             "installed": not is_managed,
             "managed": is_managed,
             "id": tool.get("msdyn_aimodelid", ""),
             "_component_type": "msdyn_aimodel",  # Entity name for dynamic lookup
-        }
-    elif tool_type == "restapi":
-        # REST APIs are always custom/installed
-        return {
-            "name": tool.get("displayname") or tool.get("name", ""),
-            "type": "REST API",
-            "publisher": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
-            "installed": True,
-            "managed": False,
-            "id": tool.get("connectorid", ""),
-            "_component_type": COMPONENT_TYPE_CONNECTOR,  # Hardcoded - entity lookup doesn't work
         }
     elif tool_type == "connector":
         props = tool.get("properties", {})
@@ -55,6 +58,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
         return {
             "name": props.get("displayName") or tool.get("name", ""),
             "type": "Custom Connector" if is_custom else "Connector",
+            "subtype": subtype or "-",
             "publisher": props.get("publisher", ""),
             "installed": is_custom,
             "managed": not is_custom,
@@ -67,6 +71,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
         return {
             "name": props.get("displayName") or tool.get("name", ""),
             "type": "MCP",
+            "subtype": "-",
             "publisher": props.get("publisher", ""),
             "installed": is_custom,
             "managed": not is_custom,
@@ -82,7 +87,7 @@ def tool_list(
         None,
         "--type",
         "-T",
-        help="Filter by tool type: prompt, restapi, connector, mcp",
+        help="Filter by tool type: prompt, connector, mcp",
     ),
     installed_only: bool = typer.Option(
         False,
@@ -106,20 +111,19 @@ def tool_list(
     """
     List all tools available to add to Copilot Studio agents.
 
-    Shows the full catalog of available tools: prompts, connectors, REST APIs,
-    and MCP servers. The 'Installed' column shows which tools are configured
-    in your environment.
+    Shows the full catalog of available tools: prompts, connectors, and MCP servers.
+    The 'Installed' column shows which tools are configured in your environment.
 
     Tool Types:
       - prompt: AI Builder prompts for text analysis and generation
-      - connector: Power Platform connectors (1000+ available)
-      - restapi: REST API tools defined with OpenAPI specs
+      - connector: Power Platform connectors (custom and managed)
       - mcp: Model Context Protocol servers
 
-    Installed Status:
-      - Yes: Custom tool created in your environment
-      - No: Available from catalog, not yet installed
-      - System: Built-in system tool (always available)
+    Custom Connector Subtypes (shown for installed custom connectors):
+      - Rest Api: OpenAPI/Swagger-based connectors
+      - Custom Connector: General custom connectors
+      - Flow: Flow-based connectors
+      - Dataverse: Dataverse connectors
 
     Examples:
         copilot tool list --table                  # All available tools
@@ -127,7 +131,7 @@ def tool_list(
         copilot tool list --type connector --table # All connectors
         copilot tool list --filter "excel" --table # Search by name
     """
-    valid_types = ["prompt", "restapi", "connector", "mcp"]
+    valid_types = ["prompt", "connector", "mcp"]
     if tool_type and tool_type.lower() not in valid_types:
         typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
         raise typer.Exit(1)
@@ -139,6 +143,20 @@ def tool_list(
         # Determine which types to fetch
         types_to_fetch = [tool_type.lower()] if tool_type else valid_types
 
+        # Build a map of connector subtypes from AIPlugins (for custom connectors)
+        # Map by display name (humanname) for matching with Power Apps connectors
+        connector_subtypes_by_name = {}
+        try:
+            aiplugins = client.get("aiplugins?$select=_connector_value,pluginsubtype,humanname")
+            for plugin in aiplugins.get("value", []):
+                humanname = plugin.get("humanname", "")
+                subtype_code = plugin.get("pluginsubtype")
+                if humanname and subtype_code is not None:
+                    # Use lowercase name as key for case-insensitive matching
+                    connector_subtypes_by_name[humanname.lower()] = AIPLUGIN_SUBTYPE_LABELS.get(subtype_code, f"Type {subtype_code}")
+        except Exception:
+            pass  # Continue without subtypes if lookup fails
+
         # Fetch each tool type
         if "prompt" in types_to_fetch:
             prompts = client.list_prompts()
@@ -147,17 +165,16 @@ def tool_list(
                 if not installed_only or formatted["installed"]:
                     all_tools.append(formatted)
 
-        if "restapi" in types_to_fetch:
-            # REST APIs are always custom/installed
-            restapis = client.list_rest_apis()
-            for r in restapis:
-                all_tools.append(format_unified_tool(r, "restapi"))
-
         if "connector" in types_to_fetch:
             # Show ALL connectors from catalog
             connectors = client.list_connectors()
             for c in connectors:
-                formatted = format_unified_tool(c, "connector")
+                # Look up subtype for custom connectors by display name
+                props = c.get("properties", {})
+                display_name = props.get("displayName") or c.get("name", "")
+                # Match by display name (case-insensitive)
+                subtype = connector_subtypes_by_name.get(display_name.lower())
+                formatted = format_unified_tool(c, "connector", subtype)
                 if not installed_only or formatted["installed"]:
                     all_tools.append(formatted)
 
@@ -207,8 +224,8 @@ def tool_list(
         if table:
             print_table(
                 all_tools,
-                columns=["name", "type", "publisher", "installed", "deps", "id"],
-                headers=["Name", "Type", "Publisher", "Installed", "Deps", "ID"],
+                columns=["name", "type", "subtype", "publisher", "installed", "deps", "id"],
+                headers=["Name", "Type", "Subtype", "Publisher", "Installed", "Deps", "ID"],
             )
         else:
             print_json(all_tools)
@@ -321,6 +338,16 @@ def tool_remove(
             if detected_type == "prompt":
                 client.delete_prompt(tool_id)
             elif detected_type == "restapi":
+                # First, delete any auto-generated AIPlugin wrappers that reference this connector
+                try:
+                    aiplugins = client.get(f"aiplugins?$filter=_connector_value eq {tool_id}&$select=aipluginid,humanname")
+                    for plugin in aiplugins.get("value", []):
+                        plugin_id = plugin.get("aipluginid")
+                        plugin_name = plugin.get("humanname", plugin_id)
+                        client.delete(f"aiplugins({plugin_id})")
+                        typer.echo(f"Deleted associated AIPlugin '{plugin_name}'")
+                except Exception:
+                    pass  # Continue with REST API deletion even if AIPlugin cleanup fails
                 client.delete_rest_api(tool_id)
             print_success(f"Deleted {type_display} '{tool_name}'")
         except Exception as delete_error:
