@@ -449,6 +449,47 @@ copilot tool connector get <connector-id>
 
 ---
 
+### Connector Connections Commands
+
+Manage and test connections (authenticated instances) for connectors.
+
+```bash
+# List connections for a connector
+copilot tool connector connections list --connector-id shared_office365
+copilot tool connector connections list -c shared_commondataserviceforapps --table
+copilot tool connector connections list -c shared_podio --connection-id abc123
+
+# Test connection authentication
+copilot tool connector connections auth-test --connector-id shared_office365
+copilot tool connector connections auth-test -c shared_commondataserviceforapps --table
+copilot tool connector connections auth-test -c shared_podio --connection-id abc123
+copilot tool connector connections auth-test -c shared_office365 --test-api
+```
+
+**List Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID (e.g., shared_office365) |
+| `--connection-id` | Filter to a specific connection ID |
+| `-t, --table` | Display as formatted table |
+
+**Auth-Test Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID |
+| `--connection-id` | Test a specific connection ID (tests all if not provided) |
+| `-t, --table` | Display as formatted table |
+| `--test-api` | Also call the testConnection API endpoint (not all connectors support this) |
+
+**Connection Statuses:**
+| Status | Description |
+|--------|-------------|
+| `Connected` | Connection is authenticated and ready to use |
+| `Error` | Connection has an authentication or configuration issue |
+| `Unauthenticated` | Connection needs to be authenticated |
+
+---
+
 ### REST API Commands
 
 List and view REST API tools (custom connectors defined with OpenAPI specs).

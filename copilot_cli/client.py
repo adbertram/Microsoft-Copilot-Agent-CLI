@@ -2654,6 +2654,132 @@ outputType: {{}}"""
         except httpx.RequestError as e:
             raise ClientError(f"Connection request failed: {e}")
 
+    def list_connections(
+        self, connector_id: str, environment_id: Optional[str] = None
+    ) -> list[dict]:
+        """
+        List connections for a specific connector in the environment.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_office365)
+            environment_id: Power Platform environment ID. If not provided,
+                            will use DATAVERSE_ENVIRONMENT_ID from config.
+
+        Returns:
+            List of connection objects for this connector
+        """
+        # Get environment ID from config if not provided
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file (e.g., Default-<tenant-id> or the environment GUID)."
+                )
+
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
+            f"{connector_id}/connections"
+            f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("value", [])
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to list connections: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Request failed: {e}")
+
+    def test_connection(
+        self, connector_id: str, connection_id: str, environment_id: Optional[str] = None
+    ) -> dict:
+        """
+        Test authentication for a specific connection.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_office365)
+            connection_id: The connection's unique identifier (GUID)
+            environment_id: Power Platform environment ID. If not provided,
+                            will use DATAVERSE_ENVIRONMENT_ID from config.
+
+        Returns:
+            Test result with status information
+        """
+        # Get environment ID from config if not provided
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file (e.g., Default-<tenant-id> or the environment GUID)."
+                )
+
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
+            f"{connector_id}/connections/{connection_id}/testConnection"
+            f"?api-version=2016-11-01"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = self._http_client.post(url, headers=headers, json={}, timeout=60.0)
+            # Test connection can return various status codes
+            # 200 = success, 401/403 = auth failed, etc.
+            result = {
+                "status_code": response.status_code,
+                "success": response.status_code == 200,
+            }
+            try:
+                result["response"] = response.json()
+            except Exception:
+                result["response"] = response.text[:500] if response.text else ""
+            return result
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            return {
+                "status_code": e.response.status_code,
+                "success": False,
+                "error": error_detail or f"HTTP {e.response.status_code}",
+            }
+        except httpx.RequestError as e:
+            return {
+                "status_code": 0,
+                "success": False,
+                "error": f"Request failed: {e}",
+            }
+
     def list_azure_ai_search_connections(self, environment_id: str) -> list[dict]:
         """
         List Azure AI Search connections in a Power Platform environment.
@@ -2663,6 +2789,15 @@ outputType: {{}}"""
 
         Returns:
             List of connection objects
+
+        Note:
+            This is a convenience method. Use list_connections() for any connector.
+        """
+        return self.list_connections("shared_azureaisearch", environment_id)
+
+    def _list_azure_ai_search_connections_legacy(self, environment_id: str) -> list[dict]:
+        """
+        Legacy implementation - kept for reference.
         """
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
