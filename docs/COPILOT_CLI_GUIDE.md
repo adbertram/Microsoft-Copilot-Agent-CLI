@@ -381,6 +381,37 @@ copilot agent tool add -a <parent-id> --toolType agent \
 - Must be published
 - Must have "Let other agents connect" enabled in settings
 
+### Update Agent Tool
+
+Update a tool's configuration including name, description, availability, and user confirmation settings.
+
+```bash
+# Update name and description
+copilot agent tool update <component-id> --name "New Tool Name"
+copilot agent tool update <component-id> --description "Use this tool when..."
+
+# Configure availability (dynamic orchestration vs topic-only)
+copilot agent tool update <component-id> --available        # Agent can use anytime
+copilot agent tool update <component-id> --not-available    # Only from topics
+
+# Configure user confirmation
+copilot agent tool update <component-id> --confirm          # Ask user before running
+copilot agent tool update <component-id> --no-confirm       # Run without asking
+copilot agent tool update <component-id> --confirm --confirm-message "Proceed with action?"
+
+# Combined update
+copilot agent tool update <component-id> -n "Name" -d "Description" --available --confirm
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-n, --name` | New display name for the tool |
+| `-d, --description` | New description for AI orchestration (max 1024 chars) |
+| `--available/--not-available` | Control tool availability for dynamic orchestration |
+| `--confirm/--no-confirm` | Enable/disable user confirmation before running |
+| `-m, --confirm-message` | Custom confirmation prompt message |
+
 ### Remove Agent Tool
 
 ```bash

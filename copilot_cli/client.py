@@ -1452,6 +1452,10 @@ outputType: {{}}"""
         component_id: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
+        availability: Optional[bool] = None,
+        confirmation: Optional[bool] = None,
+        confirmation_message: Optional[str] = None,
+        inputs: Optional[dict] = None,
     ) -> dict:
         """
         Update a tool's attributes.
@@ -1460,6 +1464,10 @@ outputType: {{}}"""
             component_id: The tool component's unique identifier
             name: New display name for the tool
             description: New description for the tool (used by AI for orchestration)
+            availability: Whether agent can use this tool dynamically (True = anytime, False = only from topics)
+            confirmation: Whether to ask user for confirmation before running
+            confirmation_message: Custom message to show when asking for confirmation
+            inputs: Input parameter defaults as dict, e.g., {"workspace": "123", "project": "456"}
 
         Returns:
             The updated component data
@@ -1468,7 +1476,7 @@ outputType: {{}}"""
         component = self.get(f"botcomponents({component_id})")
 
         updates = {}
-        yaml_updates = {}
+        data = component.get("data", "")
 
         if name is not None:
             updates["name"] = name
@@ -1476,18 +1484,74 @@ outputType: {{}}"""
         if description is not None:
             updates["description"] = description
             # Also update modelDescription in the YAML data
-            if component.get("data"):
-                # Use regex to replace modelDescription in YAML
-                # This avoids needing a yaml dependency
-                data = component["data"]
+            if data:
                 # Match modelDescription: followed by the value (until next line with key or end)
                 pattern = r'(modelDescription:)\s*[^\n]*'
                 # Escape any special chars in description for YAML
                 escaped_desc = description.replace('\\', '\\\\').replace('"', '\\"')
                 replacement = f'\\1 {escaped_desc}'
-                new_data = re.sub(pattern, replacement, data)
-                if new_data != data:
-                    updates["data"] = new_data
+                data = re.sub(pattern, replacement, data)
+
+        # Handle availability setting (allowDynamicInvocation)
+        if availability is not None and data:
+            # Check if allowDynamicInvocation already exists
+            if 'allowDynamicInvocation:' in data:
+                # Update existing value
+                pattern = r'(allowDynamicInvocation:)\s*(true|false)'
+                replacement = f'\\1 {str(availability).lower()}'
+                data = re.sub(pattern, replacement, data)
+            else:
+                # Add after kind: TaskDialog line
+                pattern = r'(kind:\s*TaskDialog\n)'
+                replacement = f'\\1allowDynamicInvocation: {str(availability).lower()}\n'
+                data = re.sub(pattern, replacement, data)
+
+        # Handle confirmation setting
+        if confirmation is not None and data:
+            if confirmation:
+                # Add or update confirmation block
+                message = confirmation_message or "Do you want to proceed with this action?"
+                # Escape special characters in the message
+                escaped_message = message.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+
+                confirmation_block = f'''confirmation:
+  activity: "{escaped_message}"
+  mode: Strict
+'''
+                # Check if confirmation block already exists
+                if 'confirmation:' in data:
+                    # Update existing confirmation block
+                    # Match the entire confirmation block (multi-line)
+                    pattern = r'confirmation:\s*\n\s*activity:[^\n]*\n\s*mode:[^\n]*\n?'
+                    data = re.sub(pattern, confirmation_block, data)
+                else:
+                    # Add confirmation block after kind: TaskDialog (or allowDynamicInvocation if present)
+                    if 'allowDynamicInvocation:' in data:
+                        pattern = r'(allowDynamicInvocation:[^\n]*\n)'
+                        replacement = f'\\1{confirmation_block}'
+                    else:
+                        pattern = r'(kind:\s*TaskDialog\n)'
+                        replacement = f'\\1{confirmation_block}'
+                    data = re.sub(pattern, replacement, data)
+            else:
+                # Remove confirmation block if it exists
+                pattern = r'confirmation:\s*\n\s*activity:[^\n]*\n\s*mode:[^\n]*\n?'
+                data = re.sub(pattern, '', data)
+        elif confirmation_message is not None and data:
+            # Only updating the confirmation message (confirmation is not explicitly set)
+            if 'confirmation:' in data:
+                escaped_message = confirmation_message.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+                pattern = r'(confirmation:\s*\n\s*activity:)[^\n]*'
+                replacement = f'\\1 "{escaped_message}"'
+                data = re.sub(pattern, replacement, data)
+
+        # Handle input default values
+        if inputs is not None and data:
+            data = self._update_tool_inputs(data, inputs)
+
+        # Check if YAML data was modified
+        if data != component.get("data", ""):
+            updates["data"] = data
 
         if not updates:
             return component
@@ -1593,6 +1657,48 @@ outputType: {{}}"""
                 return match.group(1)
         return ""
 
+    def _update_tool_inputs(self, data: str, inputs: dict) -> str:
+        """
+        Update input default values in tool YAML data.
+
+        Uses regex to preserve the original YAML structure while only modifying
+        the specific input defaultValue fields.
+
+        Args:
+            data: The YAML data string from the tool component
+            inputs: Dict of property names to default values, e.g., {"workspace": "123", "projects": "456"}
+
+        Returns:
+            Updated YAML data string
+        """
+        # Check if inputs section exists
+        has_inputs_section = 'inputs:' in data
+
+        for prop_name, default_value in inputs.items():
+            # Check if this input already exists with defaultValue
+            # Pattern matches: "- kind: ManualTaskInput\n    propertyName: X\n    defaultValue: Y"
+            pattern_with_default = rf'(- kind: ManualTaskInput\s*\n\s*propertyName: {prop_name}\s*\n\s*)defaultValue:[^\n]*'
+            if re.search(pattern_with_default, data):
+                # Update existing defaultValue
+                data = re.sub(pattern_with_default, rf'\1defaultValue: {default_value}', data)
+            else:
+                # Check if input exists without defaultValue
+                pattern = rf'(- kind: ManualTaskInput\s*\n\s*propertyName: {prop_name})\s*\n'
+                if re.search(pattern, data):
+                    # Add defaultValue after propertyName
+                    data = re.sub(pattern, rf'\1\n    defaultValue: {default_value}\n', data)
+                elif not has_inputs_section:
+                    # Need to add inputs section - add after kind: TaskDialog
+                    new_input = f"inputs:\n  - kind: ManualTaskInput\n    propertyName: {prop_name}\n    defaultValue: {default_value}\n\n"
+                    data = re.sub(r'(kind: TaskDialog\n)', rf'\1{new_input}', data)
+                    has_inputs_section = True
+                else:
+                    # inputs section exists but this input doesn't - add to it
+                    new_input = f"  - kind: ManualTaskInput\n    propertyName: {prop_name}\n    defaultValue: {default_value}\n\n"
+                    data = re.sub(r'(inputs:\n)', rf'\1{new_input}', data)
+
+        return data
+
     def _build_input_output_yaml(self, inputs: Optional[dict], outputs: Optional[dict]) -> tuple[str, str]:
         """Build inputType and outputType YAML sections."""
         if inputs:
@@ -1618,6 +1724,68 @@ outputType: {{}}"""
             output_yaml = "outputType: {}"
 
         return input_yaml, output_yaml
+
+    def _build_connector_outputs_yaml(self, connector_id: str, operation_id: str) -> str:
+        """Build outputs YAML from connector's swagger response schema."""
+        try:
+            # Get connector details
+            connector = self.get_connector(connector_id)
+            swagger = connector.get('properties', {}).get('swagger', {})
+            paths = swagger.get('paths', {})
+            definitions = swagger.get('definitions', {})
+
+            # Find the operation
+            for path, methods in paths.items():
+                for method, details in methods.items():
+                    if details.get('operationId') == operation_id:
+                        # Get response schema
+                        responses = details.get('responses', {})
+                        for code, resp in responses.items():
+                            schema = resp.get('schema', {})
+                            if '$ref' in schema:
+                                # Resolve reference
+                                ref_name = schema['$ref'].split('/')[-1]
+                                schema = definitions.get(ref_name, {})
+
+                            # Extract property names recursively
+                            props = self._extract_property_names(schema, definitions, prefix='')
+                            if props:
+                                outputs_lines = ['outputs:']
+                                for prop in props:
+                                    outputs_lines.append(f'  - propertyName: {prop}')
+                                    outputs_lines.append('')  # Empty line after each
+                                return '\n'.join(outputs_lines) + '\n'
+            return ''
+        except Exception:
+            return ''
+
+    def _extract_property_names(self, schema: dict, definitions: dict, prefix: str = '', max_depth: int = 2) -> list:
+        """Extract property names from schema, handling nested objects."""
+        if max_depth <= 0:
+            return []
+
+        props = []
+        properties = schema.get('properties', {})
+
+        for name, prop_schema in properties.items():
+            full_name = f'{prefix}{name}' if prefix else name
+
+            # Check if it's a reference to another definition
+            if '$ref' in prop_schema:
+                ref_name = prop_schema['$ref'].split('/')[-1]
+                nested_schema = definitions.get(ref_name, {})
+                nested_props = self._extract_property_names(nested_schema, definitions, f'{full_name}.', max_depth - 1)
+                props.extend(nested_props)
+            elif prop_schema.get('type') == 'object' and 'properties' in prop_schema:
+                nested_props = self._extract_property_names(prop_schema, definitions, f'{full_name}.', max_depth - 1)
+                props.extend(nested_props)
+            elif prop_schema.get('type') == 'array':
+                # For arrays, just add the property name
+                props.append(full_name)
+            else:
+                props.append(full_name)
+
+        return props
 
     def _generate_agent_tool_yaml(
         self, bot_id: str, bot_schema: str, tool_id: str,
@@ -1681,6 +1849,31 @@ action:
 
         connector_id, operation_id = tool_id.split(':', 1)
 
+        # Check if operation has internal visibility (not allowed)
+        try:
+            connector = self.get_connector(connector_id)
+            swagger = connector.get('properties', {}).get('swagger', {})
+            paths = swagger.get('paths', {})
+            for path, methods in paths.items():
+                for method, details in methods.items():
+                    if details.get('operationId') == operation_id:
+                        visibility = details.get('x-ms-visibility', '')
+                        if visibility == 'internal':
+                            raise ClientError(
+                                f"Operation '{operation_id}' has internal visibility and cannot be used as a tool.\n"
+                                f"Internal operations are not exposed in the Copilot Studio UI and may not work correctly.\n"
+                                f"Use 'copilot connector operations {connector_id}' to see available operations."
+                            )
+                        break
+        except ClientError:
+            raise
+        except Exception:
+            pass  # If we can't check visibility, proceed anyway
+
+        # Build full connection reference: {bot_schema}.{connector_id}.{connection_id}
+        # connection_ref should be the connection GUID
+        full_connection_ref = f"{bot_schema}.{connector_id}.{connection_ref}"
+
         # Use operation_id as name if not provided
         resolved_name = name or operation_id
 
@@ -1688,27 +1881,26 @@ action:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
         schema_name = f"{bot_schema}.InvokeConnectorTaskAction.{clean_name}"
 
-        # Auto-generate description if not provided
-        resolved_description = description or f"Invoke {operation_id} operation from {connector_id} connector."
+        # Auto-generate description if not provided - try to get from connector swagger
+        resolved_description = description
+        if not resolved_description:
+            resolved_description = f"Invoke {operation_id} operation from {connector_id} connector."
 
-        input_yaml, output_yaml = self._build_input_output_yaml(inputs, outputs)
-
-        # Build action section
-        action_lines = [
-            "action:",
-            "  kind: InvokeConnectorTaskAction",
-            f"  connectorId: {connector_id}",
-            f"  operationId: {operation_id}",
-        ]
-        if connection_ref:
-            action_lines.append(f"  connectionReference: {connection_ref}")
+        # Build outputs from connector response schema
+        outputs_yaml = self._build_connector_outputs_yaml(connector_id, operation_id)
 
         tool_yaml = f"""kind: TaskDialog
+modelDisplayName: {resolved_name}
 modelDescription: {resolved_description}
-schemaName: {schema_name}
-{chr(10).join(action_lines)}
-{input_yaml}
-{output_yaml}"""
+{outputs_yaml}action:
+  kind: InvokeConnectorTaskAction
+  connectionReference: {full_connection_ref}
+  connectionProperties:
+    mode: Invoker
+
+  operationId: {operation_id}
+
+outputMode: All"""
 
         return tool_yaml, schema_name, resolved_name, resolved_description
 

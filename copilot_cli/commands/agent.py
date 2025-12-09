@@ -1842,11 +1842,12 @@ def format_tool_for_display(tool: dict) -> dict:
     # Determine category from schema and data
     category = get_tool_category(schema_name, data)
 
-    # Extract description from data if available
+    # Extract description and display name from data if available
     data = tool.get("data", "") or ""
     description = ""
-    if "modelDescription:" in data:
-        # Extract the description from YAML-like data
+    display_name = ""
+    if data:
+        # Extract the description and display name from YAML-like data
         lines = data.split("\n")
         for line in lines:
             if line.startswith("modelDescription:"):
@@ -1854,10 +1855,12 @@ def format_tool_for_display(tool: dict) -> dict:
                 # Truncate long descriptions
                 if len(description) > 80:
                     description = description[:77] + "..."
-                break
+            elif line.startswith("modelDisplayName:"):
+                display_name = line.replace("modelDisplayName:", "").strip().strip('"')
 
     return {
         "name": tool.get("name"),
+        "display_name": display_name,
         "category": category,
         "component_id": tool.get("botcomponentid"),
         "description": description,
@@ -1917,8 +1920,8 @@ def tool_list(
         if table:
             print_table(
                 formatted,
-                columns=["name", "category", "status", "component_id"],
-                headers=["Name", "Category", "Status", "Component ID"],
+                columns=["name", "display_name", "category", "status", "component_id"],
+                headers=["Name", "Display Name", "Category", "Status", "Component ID"],
             )
         else:
             print_json(formatted)
@@ -2148,6 +2151,28 @@ def tool_update(
         "-d",
         help="New description for the tool (used by AI for orchestration, max 1024 chars)",
     ),
+    availability: Optional[bool] = typer.Option(
+        None,
+        "--available/--not-available",
+        help="Allow agent to use tool dynamically (--available) or only from topics (--not-available)",
+    ),
+    confirmation: Optional[bool] = typer.Option(
+        None,
+        "--confirm/--no-confirm",
+        help="Ask user for confirmation before running the tool",
+    ),
+    confirmation_message: Optional[str] = typer.Option(
+        None,
+        "--confirm-message",
+        "-m",
+        help="Custom message to show when asking for confirmation",
+    ),
+    inputs: Optional[str] = typer.Option(
+        None,
+        "--inputs",
+        "-i",
+        help='Input default values as JSON, e.g., \'{"workspace": "123", "projects": "456"}\'',
+    ),
 ):
     """
     Update a tool's attributes.
@@ -2156,13 +2181,41 @@ def tool_update(
     to determine when to use this tool. Make it descriptive and explicit about
     when the tool should be used.
 
+    Tool Availability:
+      --available      Agent may use this tool at any time (generative orchestration)
+      --not-available  Only use when explicitly referenced by topics or agents
+
+    User Confirmation:
+      --confirm        Ask end user for approval before running
+      --no-confirm     Run without asking (default)
+      --confirm-message  Custom confirmation prompt text
+
+    Input Defaults:
+      --inputs         Set default values for tool inputs as JSON
+
     Examples:
+        # Update name and description
         copilot agent tool update <component-id> --name "New Tool Name"
         copilot agent tool update <component-id> --description "Use this tool when..."
-        copilot agent tool update <component-id> -n "Name" -d "Description"
+
+        # Configure availability
+        copilot agent tool update <component-id> --available      # Allow dynamic use
+        copilot agent tool update <component-id> --not-available  # Only from topics
+
+        # Configure user confirmation
+        copilot agent tool update <component-id> --confirm        # Enable confirmation
+        copilot agent tool update <component-id> --no-confirm     # Disable confirmation
+        copilot agent tool update <component-id> --confirm --confirm-message "Proceed with action?"
+
+        # Set input default values
+        copilot agent tool update <component-id> --inputs '{"workspace": "123456", "projects": "789012"}'
+
+        # Combined update
+        copilot agent tool update <component-id> -n "Name" -d "Description" --available --confirm
     """
-    if not name and not description:
-        typer.echo("Error: At least one of --name or --description must be provided.", err=True)
+    if not any([name, description, availability is not None, confirmation is not None, confirmation_message, inputs]):
+        typer.echo("Error: At least one option must be provided.", err=True)
+        typer.echo("Options: --name, --description, --available/--not-available, --confirm/--no-confirm, --confirm-message, --inputs")
         raise typer.Exit(1)
 
     # Validate description length
@@ -2170,12 +2223,28 @@ def tool_update(
         typer.echo(f"Error: Description exceeds 1024 character limit ({len(description)} chars).", err=True)
         raise typer.Exit(1)
 
+    # Parse inputs JSON if provided
+    inputs_dict = None
+    if inputs:
+        try:
+            inputs_dict = json.loads(inputs)
+            if not isinstance(inputs_dict, dict):
+                typer.echo("Error: --inputs must be a JSON object (dict)", err=True)
+                raise typer.Exit(1)
+        except json.JSONDecodeError as e:
+            typer.echo(f"Error: Invalid JSON for --inputs: {e}", err=True)
+            raise typer.Exit(1)
+
     try:
         client = get_client()
         result = client.update_tool(
             component_id=component_id,
             name=name,
             description=description,
+            availability=availability,
+            confirmation=confirmation,
+            confirmation_message=confirmation_message,
+            inputs=inputs_dict,
         )
         print_success(f"Tool updated successfully!")
         typer.echo(f"Name: {result.get('name', 'N/A')}")
@@ -2184,10 +2253,187 @@ def tool_update(
             if len(desc) > 100:
                 desc = desc[:100] + "..."
             typer.echo(f"Description: {desc}")
+
+        # Show additional settings if they were updated
+        data = result.get('data', '')
+        if availability is not None:
+            status = "Available for dynamic use" if availability else "Only available from topics"
+            typer.echo(f"Availability: {status}")
+        if confirmation is not None or confirmation_message:
+            if 'confirmation:' in data:
+                typer.echo(f"User Confirmation: Enabled")
+            else:
+                typer.echo(f"User Confirmation: Disabled")
+        if inputs_dict:
+            typer.echo(f"Input defaults updated: {', '.join(inputs_dict.keys())}")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
 
+
+# =============================================================================
+# Tool Connections Commands (Agent Tool Connection References)
+# =============================================================================
+
+tool_connections_app = typer.Typer(help="Manage agent tool connection references")
+
+
+def format_connection_reference_for_display(conn_ref: dict) -> dict:
+    """Format a connection reference for display."""
+    display_name = conn_ref.get("connectionreferencedisplayname") or ""
+    if len(display_name) > 40:
+        display_name = display_name[:37] + "..."
+
+    logical_name = conn_ref.get("connectionreferencelogicalname") or ""
+    connector_id = conn_ref.get("connectorid") or ""
+
+    # Extract connector name from connector_id path
+    # Format: /providers/Microsoft.PowerApps/apis/shared_office365
+    connector_name = ""
+    if connector_id:
+        parts = connector_id.split("/")
+        if parts:
+            connector_name = parts[-1]
+
+    state = conn_ref.get("statecode")
+    state_str = "Active" if state == 0 else "Inactive" if state == 1 else "Unknown"
+
+    return {
+        "name": display_name,
+        "logical_name": logical_name,
+        "id": conn_ref.get("connectionreferenceid") or "",
+        "connector": connector_name,
+        "state": state_str,
+    }
+
+
+@tool_connections_app.command("list")
+def tool_connections_list(
+    table: bool = typer.Option(
+        False,
+        "--table",
+        "-t",
+        help="Display output as a formatted table instead of JSON",
+    ),
+):
+    """
+    List agent tool connection references.
+
+    Connection references are the links between Copilot Studio agents/tools
+    and Power Platform connector connections. These represent the connectors
+    that agents can use for their tools.
+
+    Note: This lists solution-aware connection references used by agents,
+    not all Power Platform user connections. User connections are visible
+    in the Power Automate portal under Connections.
+
+    Examples:
+        copilot agent tool connections list
+        copilot agent tool connections list --table
+    """
+    try:
+        client = get_client()
+        conn_refs = client.list_connection_references()
+
+        if not conn_refs:
+            typer.echo("No connection references found in the environment.")
+            return
+
+        formatted = [format_connection_reference_for_display(cr) for cr in conn_refs]
+
+        if table:
+            print_table(
+                formatted,
+                columns=["name", "logical_name", "connector", "state", "id"],
+                headers=["Name", "Logical Name", "Connector", "State", "ID"],
+            )
+        else:
+            print_json(formatted)
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@tool_connections_app.command("remove")
+def tool_connections_remove(
+    connection_ref_id: str = typer.Argument(
+        ...,
+        help="The connection reference's unique identifier (GUID)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Remove a connection reference from the environment.
+
+    This command deletes a connection reference from the Dataverse environment.
+    Connection references are solution-aware links between Power Platform
+    solutions and connector connections.
+
+    WARNING: Removing a connection reference may break agents or tools that
+    depend on it. Use with caution.
+
+    Examples:
+        copilot agent tool connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e
+        copilot agent tool connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e --force
+    """
+    try:
+        client = get_client()
+
+        # Try to get the connection reference first to show details
+        try:
+            conn_refs = client.list_connection_references()
+            conn_ref = next(
+                (cr for cr in conn_refs if cr.get("connectionreferenceid") == connection_ref_id),
+                None
+            )
+        except Exception:
+            conn_ref = None
+
+        if conn_ref:
+            display_name = conn_ref.get("connectionreferencedisplayname") or "Unknown"
+            logical_name = conn_ref.get("connectionreferencelogicalname") or "Unknown"
+            typer.echo(f"Connection Reference: {display_name}")
+            typer.echo(f"Logical Name: {logical_name}")
+            typer.echo(f"ID: {connection_ref_id}")
+
+            # Block deletion of system-managed connection references
+            if logical_name.startswith("msdyn_"):
+                typer.echo("")
+                typer.echo("Error: Cannot remove system-managed connection references.")
+                typer.echo(
+                    "Connection references with 'msdyn_' prefix are managed by Microsoft "
+                    "and used internally by Power Platform/Copilot Studio."
+                )
+                raise typer.Exit(1)
+        else:
+            typer.echo(f"Connection Reference ID: {connection_ref_id}")
+
+        if not force:
+            typer.echo("\nWARNING: This may break agents or tools using this connection reference.")
+            confirm = typer.confirm("Are you sure you want to remove this connection reference?")
+            if not confirm:
+                typer.echo("Cancelled.")
+                raise typer.Exit(0)
+
+        typer.echo("\nRemoving connection reference...")
+        client.delete_connection_reference(connection_ref_id)
+        typer.echo("Connection reference removed successfully.")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+# Register tool connections subgroup under tool_app
+tool_app.add_typer(tool_connections_app, name="connections")
 
 # Register tool subgroup
 app.add_typer(tool_app, name="tool")

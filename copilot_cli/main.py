@@ -39,7 +39,7 @@ except ImportError:
 
 try:
     from .commands import connector
-    app.add_typer(connector.app, name="connector", help="Manage Power Platform connectors and connections")
+    app.add_typer(connector.app, name="connector", help="List Power Platform connectors")
 except ImportError:
     pass
 
