@@ -56,6 +56,35 @@ def format_connector_for_display(connector: dict) -> dict:
     }
 
 
+def format_connection_reference_for_display(conn_ref: dict) -> dict:
+    """Format a connection reference for display."""
+    display_name = conn_ref.get("connectionreferencedisplayname") or ""
+    if len(display_name) > 40:
+        display_name = display_name[:37] + "..."
+
+    logical_name = conn_ref.get("connectionreferencelogicalname") or ""
+    connector_id = conn_ref.get("connectorid") or ""
+
+    # Extract connector name from connector_id path
+    # Format: /providers/Microsoft.PowerApps/apis/shared_office365
+    connector_name = ""
+    if connector_id:
+        parts = connector_id.split("/")
+        if parts:
+            connector_name = parts[-1]
+
+    state = conn_ref.get("statecode")
+    state_str = "Active" if state == 0 else "Inactive" if state == 1 else "Unknown"
+
+    return {
+        "name": display_name,
+        "logical_name": logical_name,
+        "id": conn_ref.get("connectionreferenceid") or "",
+        "connector": connector_name,
+        "state": state_str,
+    }
+
+
 def format_connection_for_display(connection: dict, connector_id: str = "") -> dict:
     """Format a connection for display."""
     props = connection.get("properties", {})
@@ -216,11 +245,11 @@ def connector_get(
 
 @connections_app.command("list")
 def connections_list(
-    connector_id: str = typer.Option(
-        ...,
+    connector_id: Optional[str] = typer.Option(
+        None,
         "--connector-id",
         "-c",
-        help="The connector's unique identifier (e.g., shared_office365)",
+        help="The connector's unique identifier (e.g., shared_office365). If not provided, lists all connection references.",
     ),
     connection_id: Optional[str] = typer.Option(
         None,
@@ -235,19 +264,46 @@ def connections_list(
     ),
 ):
     """
-    List connections for a specific connector.
+    List connections or connection references.
 
-    This command lists all authenticated connections (instances) for a
-    given connector. Each connection represents a user's authentication
+    When --connector-id is provided, lists authenticated connections for that
+    specific connector. Each connection represents a user's authentication
     to the connector's backend service.
 
+    When no --connector-id is provided, lists all connection references in the
+    Dataverse environment. Connection references are the links between Power
+    Platform solutions and connector connections.
+
     Examples:
-        copilot tool connector connections list --connector-id shared_office365
-        copilot tool connector connections list -c shared_commondataserviceforapps --table
-        copilot tool connector connections list -c shared_podio --connection-id abc123
+        copilot connector connections list --table
+        copilot connector connections list --connector-id shared_office365
+        copilot connector connections list -c shared_commondataserviceforapps --table
+        copilot connector connections list -c shared_podio --connection-id abc123
     """
     try:
         client = get_client()
+
+        # If no connector_id provided, list all connection references
+        if not connector_id:
+            conn_refs = client.list_connection_references()
+
+            if not conn_refs:
+                typer.echo("No connection references found in the environment.")
+                return
+
+            formatted = [format_connection_reference_for_display(cr) for cr in conn_refs]
+
+            if table:
+                print_table(
+                    formatted,
+                    columns=["name", "logical_name", "connector", "state", "id"],
+                    headers=["Name", "Logical Name", "Connector", "State", "ID"],
+                )
+            else:
+                print_json(formatted)
+            return
+
+        # Otherwise, list connections for specific connector
         connections = client.list_connections(connector_id)
 
         if not connections:
@@ -255,7 +311,7 @@ def connections_list(
             typer.echo("\nThis could mean:")
             typer.echo("  - No connections have been created for this connector")
             typer.echo("  - The connector ID might be incorrect")
-            typer.echo("\nUse 'copilot tool connector list --table' to see available connectors.")
+            typer.echo("\nUse 'copilot connector list --table' to see available connectors.")
             return
 
         # Filter to specific connection if requested
@@ -425,6 +481,83 @@ def connections_auth_test(
         else:
             typer.echo(f"\nSummary: All {len(results)} connection(s) are healthy ✓")
 
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@connections_app.command("remove")
+def connections_remove(
+    connection_ref_id: str = typer.Argument(
+        ...,
+        help="The connection reference's unique identifier (GUID)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Remove a connection reference from the environment.
+
+    This command deletes a connection reference from the Dataverse environment.
+    Connection references are solution-aware links between Power Platform
+    solutions and connector connections.
+
+    WARNING: Removing a connection reference may break flows or agents that
+    depend on it. Use with caution.
+
+    Examples:
+        copilot tool connector connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e
+        copilot tool connector connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e --force
+    """
+    try:
+        client = get_client()
+
+        # Try to get the connection reference first to show details
+        try:
+            conn_refs = client.list_connection_references()
+            conn_ref = next(
+                (cr for cr in conn_refs if cr.get("connectionreferenceid") == connection_ref_id),
+                None
+            )
+        except Exception:
+            conn_ref = None
+
+        if conn_ref:
+            display_name = conn_ref.get("connectionreferencedisplayname") or "Unknown"
+            logical_name = conn_ref.get("connectionreferencelogicalname") or "Unknown"
+            typer.echo(f"Connection Reference: {display_name}")
+            typer.echo(f"Logical Name: {logical_name}")
+            typer.echo(f"ID: {connection_ref_id}")
+
+            # Block deletion of system-managed connection references
+            if logical_name.startswith("msdyn_"):
+                typer.echo("")
+                typer.echo("Error: Cannot remove system-managed connection references.")
+                typer.echo(
+                    "Connection references with 'msdyn_' prefix are managed by Microsoft "
+                    "and used internally by Power Platform/Copilot Studio."
+                )
+                raise typer.Exit(1)
+        else:
+            typer.echo(f"Connection Reference ID: {connection_ref_id}")
+
+        if not force:
+            typer.echo("\nWARNING: This may break flows or agents using this connection reference.")
+            confirm = typer.confirm("Are you sure you want to remove this connection reference?")
+            if not confirm:
+                typer.echo("Cancelled.")
+                raise typer.Exit(0)
+
+        typer.echo("\nRemoving connection reference...")
+        client.delete_connection_reference(connection_ref_id)
+        typer.echo("Connection reference removed successfully.")
+
+    except typer.Exit:
+        raise
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)

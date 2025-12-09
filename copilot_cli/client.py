@@ -3088,6 +3088,46 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Connection request failed: {e}")
 
+    def list_connection_references(self) -> list[dict]:
+        """
+        List all connection references in the Dataverse environment.
+
+        Connection references are solution-aware references to connections
+        used in flows and agents.
+
+        Returns:
+            List of connection reference objects
+        """
+        select = (
+            "connectionreferenceid,connectionreferencelogicalname,"
+            "connectionreferencedisplayname,connectorid,connectionid,statecode"
+        )
+        url = f"{self.api_url}/connectionreferences?$select={select}&$orderby=connectionreferencedisplayname"
+        headers = self._get_headers()
+        response = self._http_client.get(url, headers=headers, timeout=60.0)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("value", [])
+
+    def delete_connection_reference(self, connection_reference_id: str) -> bool:
+        """
+        Delete a connection reference from the Dataverse environment.
+
+        Args:
+            connection_reference_id: The connection reference's unique identifier (GUID)
+
+        Returns:
+            True if deletion was successful
+
+        Raises:
+            ClientError: If the connection reference cannot be deleted
+        """
+        url = f"{self.api_url}/connectionreferences({connection_reference_id})"
+        headers = self._get_headers()
+        response = self._http_client.delete(url, headers=headers, timeout=60.0)
+        response.raise_for_status()
+        return True
+
     def list_connections(
         self, connector_id: str, environment_id: Optional[str] = None
     ) -> list[dict]:
