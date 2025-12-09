@@ -37,6 +37,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from .commands import environment
+    app.add_typer(environment.app, name="environment", help="Manage Power Platform environments")
+except ImportError:
+    pass
+
 
 @app.callback(invoke_without_command=True)
 def callback(

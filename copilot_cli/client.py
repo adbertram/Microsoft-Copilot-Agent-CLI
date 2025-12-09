@@ -1435,6 +1435,81 @@ outputType: {{}}"""
         self.delete(f"botcomponents({component_id})")
 
     # =========================================================================
+    # Environment Methods
+    # =========================================================================
+
+    def list_environments(self) -> list[dict]:
+        """
+        List all Power Platform environments accessible to the user.
+
+        Returns:
+            List of environment records from Business App Platform API
+
+        Note:
+            This uses the BAP (Business App Platform) API to list environments.
+        """
+        bap_token = get_access_token_from_azure_cli("https://api.bap.microsoft.com/")
+
+        url = (
+            "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments"
+            "?api-version=2021-04-01"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {bap_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("value", [])
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                error_detail = f": {error_body}"
+            except Exception:
+                error_detail = f": {e.response.text[:200]}" if e.response.text else ""
+            raise ClientError(f"Failed to list environments (HTTP {e.response.status_code}){error_detail}")
+
+    def get_environment(self, environment_id: str) -> dict:
+        """
+        Get details for a specific Power Platform environment.
+
+        Args:
+            environment_id: The environment ID (e.g., Default-<tenant-id> or GUID)
+
+        Returns:
+            Environment record from Business App Platform API
+        """
+        bap_token = get_access_token_from_azure_cli("https://api.bap.microsoft.com/")
+
+        url = (
+            f"https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/{environment_id}"
+            "?api-version=2021-04-01"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {bap_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                error_detail = f": {error_body}"
+            except Exception:
+                error_detail = f": {e.response.text[:200]}" if e.response.text else ""
+            raise ClientError(f"Failed to get environment (HTTP {e.response.status_code}){error_detail}")
+
+    # =========================================================================
     # Connector Methods
     # =========================================================================
 
