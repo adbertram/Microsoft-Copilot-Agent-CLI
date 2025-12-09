@@ -46,7 +46,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
         is_custom = is_custom_connector(tool)
         return {
             "name": props.get("displayName") or tool.get("name", ""),
-            "type": "Connector",
+            "type": "Custom Connector" if is_custom else "Connector",
             "publisher": props.get("publisher", ""),
             "installed": is_custom,
             "managed": not is_custom,
@@ -173,7 +173,7 @@ def tool_list(
             return
 
         # Sort by type then name
-        type_order = {"Prompt": 0, "Connector": 1, "REST API": 2, "MCP": 3}
+        type_order = {"Prompt": 0, "Connector": 1, "Custom Connector": 2, "REST API": 3, "MCP": 4}
         all_tools.sort(key=lambda x: (type_order.get(x["type"], 99), x["name"].lower()))
 
         if table:
