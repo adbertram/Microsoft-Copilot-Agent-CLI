@@ -54,6 +54,46 @@ def format_connection_for_display(connection: dict, connector_id: str = "") -> d
     }
 
 
+@app.command("get")
+def connections_get(
+    connection_id: str = typer.Argument(
+        ...,
+        help="The connection's unique identifier (GUID)",
+    ),
+    environment: Optional[str] = typer.Option(
+        None,
+        "--environment",
+        "--env",
+        help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
+    ),
+):
+    """
+    Get details for a specific connection by ID.
+
+    Returns the full connection object including connector ID, display name,
+    authentication status, and creation time.
+
+    Examples:
+        copilot connections get 5d8c58af-19db-4b51-b63b-cb543e53d9ba
+        copilot connections get abc123 --env Default-xxx
+    """
+    try:
+        client = get_client()
+
+        # Get environment ID from config if not provided
+        if not environment:
+            config = get_config()
+            environment = config.environment_id
+
+        connection = client.get_connection(connection_id, environment)
+        formatted = format_connection_for_display(connection)
+        print_json(formatted)
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 @app.command("list")
 def connections_list(
     connector_id: Optional[str] = typer.Option(

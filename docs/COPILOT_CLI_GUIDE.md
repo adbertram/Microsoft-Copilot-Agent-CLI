@@ -634,6 +634,17 @@ copilot connectors get shared_asana
 
 Manage Power Platform connections (authenticated credentials). Connections authenticate access to external services like Asana, SharePoint, Azure AI Search, etc.
 
+### Get Connection
+
+Get details for a specific connection by ID.
+
+```bash
+copilot connections get 5d8c58af-19db-4b51-b63b-cb543e53d9ba
+copilot connections get abc123 --env Default-xxx
+```
+
+Returns the connection's connector ID, display name, authentication status, and creation time.
+
 ### List Connections
 
 ```bash
@@ -730,6 +741,35 @@ copilot connections delete <connection-id> -c shared_azureaisearch --env Default
 ## Connection Reference Commands
 
 Manage connection references (solution-aware pointers to connections). Connection references allow flows and agents to reference a connection without being directly tied to it, making solutions portable across environments.
+
+### Create Connection Reference
+
+Create a new connection reference that points to an authenticated connection.
+
+You must have an authenticated connection before creating a connection reference. Use `copilot connections list` to find available connections. The connector is automatically derived from the connection.
+
+```bash
+# First, find your connection ID
+copilot connections list --table
+
+# Create a connection reference linked to that connection
+copilot connection-references create \
+    --name "Asana Production" \
+    --connection-id 5d8c58af-19db-4b51-b63b-cb543e53d9ba
+
+# With description
+copilot connection-references create \
+    --name "Asana Production" \
+    --connection-id 5d8c58af-19db-4b51-b63b-cb543e53d9ba \
+    --description "Production Asana connection for content workflows"
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-n, --name` | (Required) Display name for the connection reference |
+| `-c, --connection-id` | (Required) Connection ID to link to an authenticated connection |
+| `-d, --description` | Description for the connection reference |
 
 ### List Connection References
 

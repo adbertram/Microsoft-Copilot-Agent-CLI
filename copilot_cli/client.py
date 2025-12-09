@@ -3374,6 +3374,90 @@ schemaName: {schema_name}
         response.raise_for_status()
         return response.json()
 
+    def create_connection_reference(
+        self,
+        display_name: str,
+        connector_id: str,
+        connection_id: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> dict:
+        """
+        Create a new connection reference in the Dataverse environment.
+
+        Connection references are solution-aware pointers to connections,
+        allowing flows and agents to reference connections without being
+        directly tied to them.
+
+        Args:
+            display_name: Display name for the connection reference
+            connector_id: Connector identifier (e.g., 'shared_asana' or full path
+                          '/providers/Microsoft.PowerApps/apis/shared_asana')
+            connection_id: Optional connection ID to link to an existing connection
+            description: Optional description for the connection reference
+
+        Returns:
+            Created connection reference object
+
+        Raises:
+            ClientError: If the connection reference cannot be created
+        """
+        # Normalize connector_id to full path format if not already
+        if not connector_id.startswith("/"):
+            connector_id = f"/providers/Microsoft.PowerApps/apis/{connector_id}"
+
+        # Generate logical name from display name (lowercase, alphanumeric + underscore)
+        import re
+        logical_name = re.sub(r"[^a-z0-9_]", "_", display_name.lower())
+        # Add prefix to ensure uniqueness
+        logical_name = f"cr_{logical_name}"
+
+        payload = {
+            "connectionreferencedisplayname": display_name,
+            "connectionreferencelogicalname": logical_name,
+            "connectorid": connector_id,
+        }
+
+        if connection_id is not None:
+            payload["connectionid"] = connection_id
+
+        if description is not None:
+            payload["description"] = description
+
+        url = f"{self.api_url}/connectionreferences"
+        headers = self._get_headers()
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+
+            # Extract the created reference ID from response headers
+            # OData-EntityId header contains the URL with the new ID
+            entity_id_header = response.headers.get("OData-EntityId", "")
+            if entity_id_header:
+                # Extract GUID from URL like https://.../connectionreferences(guid)
+                import re as re_module
+                match = re_module.search(r"connectionreferences\(([^)]+)\)", entity_id_header)
+                if match:
+                    created_id = match.group(1)
+                    # Fetch the created record
+                    return self.get_connection_reference(created_id)
+
+            # If we can't get the ID from headers, return what we can
+            return payload
+
+        except httpx.HTTPStatusError as e:
+            error_detail = str(e)
+            if e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    if "error" in error_body:
+                        error_detail = error_body["error"].get("message", str(error_body))
+                except Exception:
+                    error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to create connection reference: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Connection reference request failed: {e}")
+
     def list_connections(
         self, connector_id: Optional[str] = None, environment_id: Optional[str] = None
     ) -> list[dict]:
@@ -3442,6 +3526,35 @@ schemaName: {schema_name}
             raise ClientError(f"Failed to list connections: HTTP {e.response.status_code}: {error_detail}")
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
+
+    def get_connection(
+        self, connection_id: str, environment_id: Optional[str] = None
+    ) -> dict:
+        """
+        Get a specific connection by ID.
+
+        Searches all connections in the environment to find the one with
+        the matching connection ID.
+
+        Args:
+            connection_id: The connection's unique identifier (GUID)
+            environment_id: Power Platform environment ID. If not provided,
+                            will use DATAVERSE_ENVIRONMENT_ID from config.
+
+        Returns:
+            Connection object with properties including connector ID
+
+        Raises:
+            ClientError: If the connection is not found
+        """
+        # List all connections and find the matching one
+        connections = self.list_connections(environment_id=environment_id)
+
+        for conn in connections:
+            if conn.get("name") == connection_id:
+                return conn
+
+        raise ClientError(f"Connection '{connection_id}' not found")
 
     def test_connection(
         self, connector_id: str, connection_id: str, environment_id: Optional[str] = None

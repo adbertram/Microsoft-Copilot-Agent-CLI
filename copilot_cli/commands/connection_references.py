@@ -41,6 +41,94 @@ def format_connection_reference_for_display(conn_ref: dict) -> dict:
     }
 
 
+@app.command("create")
+def connection_references_create(
+    name: str = typer.Option(
+        ...,
+        "--name",
+        "-n",
+        help="Display name for the connection reference",
+    ),
+    connection_id: str = typer.Option(
+        ...,
+        "--connection-id",
+        "-c",
+        help="Connection ID to link to an authenticated connection (required)",
+    ),
+    description: Optional[str] = typer.Option(
+        None,
+        "--description",
+        "-d",
+        help="Description for the connection reference",
+    ),
+):
+    """
+    Create a new connection reference in the environment.
+
+    Connection references are solution-aware pointers to connections. They
+    allow flows and agents to reference a connection without being directly
+    tied to it, making solutions portable across environments.
+
+    You must have an authenticated connection before creating a connection
+    reference. Use 'copilot connections list' to find available connections.
+
+    The connector is automatically derived from the connection.
+
+    Examples:
+        # First, find your connection ID
+        copilot connections list --table
+
+        # Create a connection reference linked to that connection
+        copilot connection-references create \\
+            --name "Asana Production" \\
+            --connection-id 5d8c58af-19db-4b51-b63b-cb543e53d9ba
+
+        # With description
+        copilot connection-references create \\
+            --name "Asana Production" \\
+            --connection-id 5d8c58af-19db-4b51-b63b-cb543e53d9ba \\
+            --description "Production Asana connection for content workflows"
+    """
+    try:
+        client = get_client()
+
+        # Look up the connection to get its connector ID
+        typer.echo(f"Looking up connection '{connection_id}'...")
+        connection = client.get_connection(connection_id)
+
+        # Extract connector ID from connection's apiId
+        # apiId format: /providers/Microsoft.PowerApps/apis/shared_asana
+        props = connection.get("properties", {})
+        api_id = props.get("apiId", "")
+        if not api_id:
+            typer.echo("Error: Could not determine connector from connection.", err=True)
+            raise typer.Exit(1)
+
+        # Extract short connector name (e.g., shared_asana)
+        connector_id = api_id.split("/")[-1] if "/" in api_id else api_id
+
+        typer.echo(f"Creating connection reference '{name}' for connector '{connector_id}'...")
+
+        result = client.create_connection_reference(
+            display_name=name,
+            connector_id=connector_id,
+            connection_id=connection_id,
+            description=description,
+        )
+
+        print_success("Connection reference created successfully.")
+        formatted = format_connection_reference_for_display(result)
+        typer.echo(f"Name: {formatted['name']}")
+        typer.echo(f"Logical Name: {formatted['logical_name']}")
+        typer.echo(f"Connector: {formatted['connector']}")
+        typer.echo(f"ID: {formatted['id']}")
+        typer.echo(f"Connection ID: {formatted['connection_id']}")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 @app.command("list")
 def connection_references_list(
     table: bool = typer.Option(
