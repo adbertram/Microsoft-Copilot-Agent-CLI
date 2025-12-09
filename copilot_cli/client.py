@@ -287,11 +287,19 @@ class DataverseClient:
         )
         components = result.get("value", [])
 
-        # Filter to only tools (components with TaskAction in schema name)
-        tools = [
-            t for t in components
-            if "TaskAction" in (t.get("schemaname") or "")
-        ]
+        # Filter to only tools
+        # Tools can be identified by:
+        # 1. Schema name containing "TaskAction" (API-created tools)
+        # 2. Schema name containing ".action." (UI-created tools)
+        # 3. Data containing "kind: TaskDialog" (all tools)
+        tools = []
+        for t in components:
+            schema_name = t.get("schemaname") or ""
+            data = t.get("data") or ""
+            if ("TaskAction" in schema_name or
+                ".action." in schema_name or
+                "kind: TaskDialog" in data):
+                tools.append(t)
 
         # Apply category filter if specified
         if category:
@@ -304,7 +312,12 @@ class DataverseClient:
             }
             pattern = category_patterns.get(category.lower())
             if pattern:
-                tools = [t for t in tools if pattern in (t.get("schemaname") or "")]
+                # Check both schema name and data field for the pattern
+                tools = [
+                    t for t in tools
+                    if pattern in (t.get("schemaname") or "") or
+                       pattern in (t.get("data") or "")
+                ]
 
         return tools
 
@@ -1433,6 +1446,342 @@ outputType: {{}}"""
             component_id: The tool component's unique identifier
         """
         self.delete(f"botcomponents({component_id})")
+
+    def add_tool(
+        self,
+        bot_id: str,
+        tool_type: str,
+        tool_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        # Type-specific parameters
+        connection_ref: Optional[str] = None,
+        no_history: bool = False,
+        method: str = "GET",
+        headers: Optional[dict] = None,
+        body: Optional[str] = None,
+    ) -> str:
+        """
+        Add a tool to a bot.
+
+        Args:
+            bot_id: The parent bot's unique identifier
+            tool_type: Tool type: 'connector', 'prompt', 'flow', 'http', 'agent'
+            tool_id: Tool identifier (format depends on tool_type)
+            name: Display name for the tool (auto-generated if not provided)
+            description: Description for AI orchestration
+            inputs: Input parameter schema (JSON dict)
+            outputs: Output parameter schema (JSON dict)
+            connection_ref: Connection reference ID (for connector/flow)
+            no_history: Don't pass conversation history (for agent)
+            method: HTTP method (for http)
+            headers: HTTP headers (for http)
+            body: Request body template (for http)
+
+        Returns:
+            The created component ID
+        """
+        # Get parent bot schema name
+        bot = self.get_bot(bot_id)
+        bot_schema = bot.get("schemaname", f"cr83c_bot{bot_id[:8]}")
+
+        # Dispatch to type-specific generator
+        generators = {
+            'connector': self._generate_connector_tool_yaml,
+            'prompt': self._generate_prompt_tool_yaml,
+            'flow': self._generate_flow_tool_yaml,
+            'http': self._generate_http_tool_yaml,
+            'agent': self._generate_agent_tool_yaml,
+        }
+
+        generator = generators.get(tool_type.lower())
+        if not generator:
+            raise ClientError(f"Invalid tool type: {tool_type}. Must be one of: {', '.join(generators.keys())}")
+
+        # Generate YAML and metadata
+        tool_yaml, schema_name, resolved_name, resolved_description = generator(
+            bot_id=bot_id,
+            bot_schema=bot_schema,
+            tool_id=tool_id,
+            name=name,
+            description=description,
+            inputs=inputs,
+            outputs=outputs,
+            connection_ref=connection_ref,
+            no_history=no_history,
+            method=method,
+            headers=headers,
+            body=body,
+        )
+
+        component_data = {
+            "componenttype": 9,  # Topic (V2)
+            "name": resolved_name,
+            "schemaname": schema_name,
+            "description": resolved_description,
+            "data": tool_yaml,
+            "parentbotid@odata.bind": f"/bots({bot_id})"
+        }
+
+        # Create the component
+        url = f"{self.api_url}/botcomponents"
+        headers_req = self._get_headers()
+        response = self._http_client.post(url, headers=headers_req, json=component_data, timeout=120.0)
+        response.raise_for_status()
+
+        # Extract component ID from OData-EntityId header
+        entity_id = response.headers.get("OData-EntityId", "")
+        if entity_id:
+            match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
+            if match:
+                return match.group(1)
+        return ""
+
+    def _build_input_output_yaml(self, inputs: Optional[dict], outputs: Optional[dict]) -> tuple[str, str]:
+        """Build inputType and outputType YAML sections."""
+        if inputs:
+            input_props = []
+            for prop_name, prop_config in inputs.items():
+                prop_type = prop_config.get("type", "String") if isinstance(prop_config, dict) else "String"
+                prop_desc = prop_config.get("description", "") if isinstance(prop_config, dict) else ""
+                if prop_desc:
+                    input_props.append(f"    {prop_name}:\n      type: {prop_type}\n      description: {prop_desc}")
+                else:
+                    input_props.append(f"    {prop_name}:\n      type: {prop_type}")
+            input_yaml = "inputType:\n  properties:\n" + "\n".join(input_props) if input_props else "inputType: {}"
+        else:
+            input_yaml = "inputType: {}"
+
+        if outputs:
+            output_props = []
+            for prop_name, prop_config in outputs.items():
+                prop_type = prop_config.get("type", "String") if isinstance(prop_config, dict) else "String"
+                output_props.append(f"    {prop_name}:\n      type: {prop_type}")
+            output_yaml = "outputType:\n  properties:\n" + "\n".join(output_props) if output_props else "outputType: {}"
+        else:
+            output_yaml = "outputType: {}"
+
+        return input_yaml, output_yaml
+
+    def _generate_agent_tool_yaml(
+        self, bot_id: str, bot_schema: str, tool_id: str,
+        name: Optional[str], description: Optional[str],
+        inputs: Optional[dict], outputs: Optional[dict],
+        no_history: bool = False, **kwargs
+    ) -> tuple[str, str, str, str]:
+        """Generate YAML for InvokeConnectedAgentTaskAction."""
+        # Get target bot details
+        target_bot = self.get_bot(tool_id)
+        target_bot_name = target_bot.get("name", "Connected Agent")
+        target_bot_schema = target_bot.get("schemaname", f"cr83c_bot{tool_id[:8]}")
+
+        # Use target bot name if no name provided
+        resolved_name = name or target_bot_name
+
+        # Generate clean name for schema
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
+        schema_name = f"{bot_schema}.InvokeConnectedAgentTaskAction.{clean_name}"
+
+        # Auto-generate description if not provided
+        if not description:
+            target_description = target_bot.get("description", "")
+            resolved_description = target_description or f"Invoke the {target_bot_name} agent to handle specialized tasks."
+        else:
+            resolved_description = description
+
+        pass_history = str(not no_history).lower()
+        input_yaml, output_yaml = self._build_input_output_yaml(inputs, outputs)
+
+        tool_yaml = f"""kind: TaskDialog
+modelDescription: {resolved_description}
+schemaName: {schema_name}
+action:
+  kind: InvokeConnectedAgentTaskAction
+  botSchemaName: {target_bot_schema}
+  passConversationHistory: {pass_history}
+{input_yaml}
+{output_yaml}"""
+
+        return tool_yaml, schema_name, resolved_name, resolved_description
+
+    def _generate_connector_tool_yaml(
+        self, bot_id: str, bot_schema: str, tool_id: str,
+        name: Optional[str], description: Optional[str],
+        inputs: Optional[dict], outputs: Optional[dict],
+        connection_ref: Optional[str] = None, **kwargs
+    ) -> tuple[str, str, str, str]:
+        """Generate YAML for InvokeConnectorTaskAction."""
+        # Parse connector_id:operation_id format
+        if ':' not in tool_id:
+            raise ClientError("Connector tool --id must be in format 'connector_id:operation_id' (e.g., 'shared_asana:GetTask')")
+
+        connector_id, operation_id = tool_id.split(':', 1)
+
+        # Use operation_id as name if not provided
+        resolved_name = name or operation_id
+
+        # Generate clean name for schema
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
+        schema_name = f"{bot_schema}.InvokeConnectorTaskAction.{clean_name}"
+
+        # Auto-generate description if not provided
+        resolved_description = description or f"Invoke {operation_id} operation from {connector_id} connector."
+
+        input_yaml, output_yaml = self._build_input_output_yaml(inputs, outputs)
+
+        # Build action section
+        action_lines = [
+            "action:",
+            "  kind: InvokeConnectorTaskAction",
+            f"  connectorId: {connector_id}",
+            f"  operationId: {operation_id}",
+        ]
+        if connection_ref:
+            action_lines.append(f"  connectionReference: {connection_ref}")
+
+        tool_yaml = f"""kind: TaskDialog
+modelDescription: {resolved_description}
+schemaName: {schema_name}
+{chr(10).join(action_lines)}
+{input_yaml}
+{output_yaml}"""
+
+        return tool_yaml, schema_name, resolved_name, resolved_description
+
+    def _generate_prompt_tool_yaml(
+        self, bot_id: str, bot_schema: str, tool_id: str,
+        name: Optional[str], description: Optional[str],
+        inputs: Optional[dict], outputs: Optional[dict], **kwargs
+    ) -> tuple[str, str, str, str]:
+        """Generate YAML for InvokePromptTaskAction."""
+        # Try to get prompt details
+        try:
+            prompt = self.get_prompt(tool_id)
+            prompt_name = prompt.get("msdyn_name", "AI Prompt")
+            prompt_schema = prompt.get("schemaname", "")
+        except Exception:
+            prompt_name = "AI Prompt"
+            prompt_schema = ""
+
+        # Use prompt name if no name provided
+        resolved_name = name or prompt_name
+
+        # Generate clean name for schema
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
+        schema_name = f"{bot_schema}.InvokePromptTaskAction.{clean_name}"
+
+        # Auto-generate description if not provided
+        resolved_description = description or f"Invoke the {prompt_name} AI Builder prompt."
+
+        input_yaml, output_yaml = self._build_input_output_yaml(inputs, outputs)
+
+        # Build action section
+        action_lines = [
+            "action:",
+            "  kind: InvokePromptTaskAction",
+            f"  promptId: {tool_id}",
+        ]
+        if prompt_schema:
+            action_lines.append(f"  promptSchemaName: {prompt_schema}")
+
+        tool_yaml = f"""kind: TaskDialog
+modelDescription: {resolved_description}
+schemaName: {schema_name}
+{chr(10).join(action_lines)}
+{input_yaml}
+{output_yaml}"""
+
+        return tool_yaml, schema_name, resolved_name, resolved_description
+
+    def _generate_flow_tool_yaml(
+        self, bot_id: str, bot_schema: str, tool_id: str,
+        name: Optional[str], description: Optional[str],
+        inputs: Optional[dict], outputs: Optional[dict],
+        connection_ref: Optional[str] = None, **kwargs
+    ) -> tuple[str, str, str, str]:
+        """Generate YAML for InvokeFlowTaskAction."""
+        # Use flow ID as name if not provided
+        resolved_name = name or f"Flow {tool_id[:8]}"
+
+        # Generate clean name for schema
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
+        schema_name = f"{bot_schema}.InvokeFlowTaskAction.{clean_name}"
+
+        # Auto-generate description if not provided
+        resolved_description = description or f"Invoke Power Automate flow."
+
+        input_yaml, output_yaml = self._build_input_output_yaml(inputs, outputs)
+
+        # Build action section with proper flow ID format
+        flow_ref = tool_id if tool_id.startswith('/providers/') else f"/providers/Microsoft.Flow/flows/{tool_id}"
+        action_lines = [
+            "action:",
+            "  kind: InvokeFlowTaskAction",
+            f"  flowId: {flow_ref}",
+        ]
+        if connection_ref:
+            action_lines.append(f"  connectionReference: {connection_ref}")
+
+        tool_yaml = f"""kind: TaskDialog
+modelDescription: {resolved_description}
+schemaName: {schema_name}
+{chr(10).join(action_lines)}
+{input_yaml}
+{output_yaml}"""
+
+        return tool_yaml, schema_name, resolved_name, resolved_description
+
+    def _generate_http_tool_yaml(
+        self, bot_id: str, bot_schema: str, tool_id: str,
+        name: Optional[str], description: Optional[str],
+        inputs: Optional[dict], outputs: Optional[dict],
+        method: str = "GET", headers: Optional[dict] = None,
+        body: Optional[str] = None, **kwargs
+    ) -> tuple[str, str, str, str]:
+        """Generate YAML for InvokeHttpTaskAction."""
+        # tool_id is the URL for HTTP tools
+        url = tool_id
+
+        # Use method + shortened URL as name if not provided
+        resolved_name = name or f"{method} API"
+
+        # Generate clean name for schema
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
+        schema_name = f"{bot_schema}.InvokeHttpTaskAction.{clean_name}"
+
+        # Auto-generate description if not provided
+        resolved_description = description or f"Make {method} request to {url}"
+
+        input_yaml, output_yaml = self._build_input_output_yaml(inputs, outputs)
+
+        # Build action section
+        action_lines = [
+            "action:",
+            "  kind: InvokeHttpTaskAction",
+            f"  method: {method.upper()}",
+            f"  url: {url}",
+        ]
+
+        if headers:
+            action_lines.append("  headers:")
+            for header_name, header_value in headers.items():
+                action_lines.append(f"    {header_name}: {header_value}")
+
+        if body:
+            # Use YAML literal block for body
+            body_indented = body.replace('\n', '\n    ')
+            action_lines.append(f"  body: |\n    {body_indented}")
+
+        tool_yaml = f"""kind: TaskDialog
+modelDescription: {resolved_description}
+schemaName: {schema_name}
+{chr(10).join(action_lines)}
+{input_yaml}
+{output_yaml}"""
+
+        return tool_yaml, schema_name, resolved_name, resolved_description
 
     # =========================================================================
     # Environment Methods

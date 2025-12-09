@@ -240,9 +240,14 @@ copilot agent topic delete <topic-id> --force   # Delete without confirmation
 
 ---
 
-## Agent Tool Commands (Connected Agents)
+## Agent Tool Commands
 
-Tools allow an agent to invoke other agents as sub-agents during orchestration.
+Tools extend an agent's capabilities by allowing it to invoke external operations during orchestration. Supported tool types:
+- **Connector** - Power Platform connector operations (e.g., SharePoint, Outlook, Dynamics)
+- **Prompt** - AI Builder prompts for text generation and analysis
+- **Flow** - Power Automate flows for complex automation
+- **HTTP** - Direct HTTP requests to external APIs
+- **Agent** - Other Copilot agents as sub-agents
 
 ### List Agent Tools
 
@@ -259,24 +264,119 @@ copilot agent tool list --agentId <agent-id> --category agent  # Only connected 
 | `-t, --table` | Display as formatted table |
 | `--category` | Filter by category (e.g., `agent`) |
 
-### Add Connected Agent Tool
+### Add Tool
+
+Add tools of any type to an agent using the unified interface:
 
 ```bash
-copilot agent tool add --agentId <parent-id> --target <child-agent-id>
-copilot agent tool add -a <parent-id> -t <child-id> --name "Expert Reviewer"
-copilot agent tool add -a <parent-id> -t <child-id> --description "Handles X tasks" --no-history
+copilot agent tool add --agentId <agent-id> --toolType <type> --id <tool-id> [options]
 ```
 
-**Options:**
+**Core Options:**
 | Option | Description |
 |--------|-------------|
-| `-a, --agentId` | Parent agent's ID (required) |
-| `-t, --target` | Target agent's ID to connect (required) |
+| `-a, --agentId` | Agent's unique identifier (required) |
+| `-T, --toolType` | Tool type: `connector`, `prompt`, `flow`, `http`, `agent` (required) |
+| `--id` | Tool identifier - format depends on tool type (required) |
 | `-n, --name` | Display name for the tool |
 | `-d, --description` | Description for AI orchestration |
-| `--no-history` | Don't pass conversation history to connected agent |
+| `--inputs` | JSON string defining input parameters |
+| `--outputs` | JSON string defining output parameters |
 
-**Requirements for target agent:**
+**Type-Specific Options:**
+| Option | Applies To | Description |
+|--------|------------|-------------|
+| `--connection-ref` | connector, flow | Connection reference name |
+| `--no-history` | agent | Don't pass conversation history |
+| `--method` | http | HTTP method (GET, POST, etc.) |
+| `--headers` | http | JSON string of HTTP headers |
+| `--body` | http | HTTP request body template |
+
+#### Tool Type: Connector
+
+Invoke Power Platform connector operations:
+
+```bash
+# Basic connector tool
+copilot agent tool add -a <agent-id> --toolType connector \
+    --id "shared_asana:GetTask" --name "Get Asana Task"
+
+# With input parameters
+copilot agent tool add -a <agent-id> --toolType connector \
+    --id "shared_office365:SendEmail" --name "Send Email" \
+    --inputs '{"to": "string", "subject": "string", "body": "string"}'
+```
+
+**ID Format:** `connector_id:operation_id` (e.g., `shared_asana:GetTask`)
+
+#### Tool Type: Prompt
+
+Invoke AI Builder prompts:
+
+```bash
+copilot agent tool add -a <agent-id> --toolType prompt \
+    --id <prompt-guid> --name "Summarize Text"
+
+copilot agent tool add -a <agent-id> --toolType prompt \
+    --id "12345678-1234-1234-1234-123456789abc" \
+    --name "Analyze Sentiment" \
+    --description "Analyzes the sentiment of customer feedback"
+```
+
+**ID Format:** Prompt GUID
+
+#### Tool Type: Flow
+
+Invoke Power Automate flows:
+
+```bash
+copilot agent tool add -a <agent-id> --toolType flow \
+    --id <flow-guid> --name "Process Order"
+
+copilot agent tool add -a <agent-id> --toolType flow \
+    --id "12345678-1234-1234-1234-123456789abc" \
+    --name "Create Support Ticket" \
+    --inputs '{"title": "string", "priority": "string"}'
+```
+
+**ID Format:** Flow GUID (auto-prefixed with `/providers/Microsoft.Flow/flows/`)
+
+#### Tool Type: HTTP
+
+Make direct HTTP requests:
+
+```bash
+# GET request
+copilot agent tool add -a <agent-id> --toolType http \
+    --id "https://api.example.com/data" --name "Fetch Data"
+
+# POST request with headers and body
+copilot agent tool add -a <agent-id> --toolType http \
+    --id "https://api.example.com/submit" \
+    --name "Submit Data" \
+    --method POST \
+    --headers '{"Content-Type": "application/json"}' \
+    --body '{"key": "value"}'
+```
+
+**ID Format:** Full URL
+
+#### Tool Type: Agent (Connected Agent)
+
+Connect another agent as a sub-agent:
+
+```bash
+copilot agent tool add -a <parent-id> --toolType agent \
+    --id <target-agent-id> --name "Expert Reviewer"
+
+# Without passing conversation history
+copilot agent tool add -a <parent-id> --toolType agent \
+    --id <target-agent-id> --name "Specialized Helper" --no-history
+```
+
+**ID Format:** Target agent GUID
+
+**Requirements for connected agents:**
 - Must be in the same environment
 - Must be published
 - Must have "Let other agents connect" enabled in settings

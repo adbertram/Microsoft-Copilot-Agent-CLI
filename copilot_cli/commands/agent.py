@@ -1980,28 +1980,35 @@ app.add_typer(topic_app, name="topic")
 tool_app = typer.Typer(help="Manage agent tools (connected agents)")
 
 
-def get_tool_category(schema_name: str) -> str:
-    """Determine the tool category from the schema name."""
-    if not schema_name:
+def get_tool_category(schema_name: str, data: str = "") -> str:
+    """Determine the tool category from the schema name or data field."""
+    # Combine schema_name and data for pattern matching
+    # UI-created tools have action kind in data, API-created in schema name
+    search_text = (schema_name or "") + " " + (data or "")
+
+    if not search_text.strip():
         return "Unknown"
 
-    # Check for known patterns in schema name
-    if "InvokeConnectedAgentTaskAction" in schema_name:
+    # Check for known patterns
+    if "InvokeConnectedAgentTaskAction" in search_text:
         return "Agent"
-    elif "InvokeFlowTaskAction" in schema_name:
+    elif "InvokeFlowTaskAction" in search_text:
         return "Flow"
-    elif "InvokePromptTaskAction" in schema_name:
+    elif "InvokePromptTaskAction" in search_text:
         return "Prompt"
-    elif "InvokeConnectorTaskAction" in schema_name or ".connector." in schema_name.lower():
+    elif "InvokeConnectorTaskAction" in search_text:
         return "Connector"
-    elif "InvokeHttpTaskAction" in schema_name:
+    elif "InvokeHttpTaskAction" in search_text:
         return "HTTP"
-    elif "TaskAction" in schema_name:
+    elif "TaskAction" in search_text:
         # Generic task action - extract the type
         import re
-        match = re.search(r'Invoke(\w+)TaskAction', schema_name)
+        match = re.search(r'Invoke(\w+)TaskAction', search_text)
         if match:
             return match.group(1)
+        return "Action"
+    elif ".action." in (schema_name or "").lower():
+        # UI-created action without clear type - mark as Action
         return "Action"
     else:
         return "Unknown"
@@ -2010,9 +2017,10 @@ def get_tool_category(schema_name: str) -> str:
 def format_tool_for_display(tool: dict) -> dict:
     """Format an agent tool for display."""
     schema_name = tool.get("schemaname", "") or ""
+    data = tool.get("data", "") or ""
 
-    # Determine category from schema
-    category = get_tool_category(schema_name)
+    # Determine category from schema and data
+    category = get_tool_category(schema_name, data)
 
     # Extract description from data if available
     data = tool.get("data", "") or ""
@@ -2107,17 +2115,22 @@ def tool_add(
         "-a",
         help="The parent agent's unique identifier (GUID)",
     ),
-    target_agent_id: str = typer.Option(
+    tool_type: str = typer.Option(
         ...,
-        "--target",
-        "-t",
-        help="The target agent's unique identifier (GUID) to connect as a tool",
+        "--toolType",
+        "-T",
+        help="Tool type: connector, prompt, flow, http, agent",
+    ),
+    tool_id: str = typer.Option(
+        ...,
+        "--id",
+        help="Tool identifier (format depends on tool type)",
     ),
     name: Optional[str] = typer.Option(
         None,
         "--name",
         "-n",
-        help="Display name for the tool (defaults to target agent's name)",
+        help="Display name for the tool (auto-generated if not provided)",
     ),
     description: Optional[str] = typer.Option(
         None,
@@ -2125,40 +2138,133 @@ def tool_add(
         "-d",
         help="Description of when to use this tool (for AI orchestration)",
     ),
+    inputs: Optional[str] = typer.Option(
+        None,
+        "--inputs",
+        help="Input parameters as JSON string",
+    ),
+    outputs: Optional[str] = typer.Option(
+        None,
+        "--outputs",
+        help="Output parameters as JSON string",
+    ),
+    # Type-specific parameters
+    connection_ref: Optional[str] = typer.Option(
+        None,
+        "--connection-ref",
+        help="Connection reference ID (for connector/flow tools)",
+    ),
     no_history: bool = typer.Option(
         False,
         "--no-history",
-        help="Don't pass conversation history to the connected agent",
+        help="Don't pass conversation history (for agent tools)",
+    ),
+    method: str = typer.Option(
+        "GET",
+        "--method",
+        help="HTTP method (for http tools)",
+    ),
+    headers_json: Optional[str] = typer.Option(
+        None,
+        "--headers",
+        help="HTTP headers as JSON string (for http tools)",
+    ),
+    body: Optional[str] = typer.Option(
+        None,
+        "--body",
+        help="Request body template (for http tools)",
     ),
 ):
     """
-    Add a connected agent as a tool.
+    Add a tool to an agent.
 
-    Creates an InvokeConnectedAgentTaskAction that allows this agent to
-    invoke another Copilot Studio agent as a sub-agent.
+    Tool Types:
+      - connector: Power Platform connector operation
+      - prompt: AI Builder prompt
+      - flow: Power Automate flow
+      - http: Direct HTTP request
+      - agent: Connected Copilot Studio agent
 
-    The target agent must:
-      - Be in the same environment
-      - Be published
-      - Have "Let other agents connect" enabled in settings
+    Tool ID Format (--id):
+      - connector: "connector_id:operation_id" (e.g., "shared_asana:GetTask")
+      - prompt: Prompt GUID
+      - flow: Flow GUID
+      - http: URL
+      - agent: Target agent GUID
 
     Examples:
-        copilot agent tool add --agentId <parent-id> --target <child-id>
-        copilot agent tool add -a <parent-id> -t <child-id> --name "Expert Reviewer"
-        copilot agent tool add -a <parent-id> -t <child-id> --no-history
+        # Connector tool
+        copilot agent tool add -a <agent-id> --toolType connector \\
+            --id "shared_asana:GetTask" --name "Get Task"
+
+        # Prompt tool
+        copilot agent tool add -a <agent-id> --toolType prompt \\
+            --id <prompt-guid> --name "Summarize"
+
+        # Flow tool
+        copilot agent tool add -a <agent-id> --toolType flow \\
+            --id <flow-guid> --name "Process Order"
+
+        # HTTP tool
+        copilot agent tool add -a <agent-id> --toolType http \\
+            --id "https://api.example.com/data" --method POST
+
+        # Connected agent tool
+        copilot agent tool add -a <agent-id> --toolType agent \\
+            --id <target-agent-id> --name "Expert Reviewer"
     """
+    import json
+
+    # Validate tool type
+    valid_types = ['connector', 'prompt', 'flow', 'http', 'agent']
+    if tool_type.lower() not in valid_types:
+        typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
+        raise typer.Exit(1)
+
+    # Parse JSON parameters
+    inputs_dict = None
+    if inputs:
+        try:
+            inputs_dict = json.loads(inputs)
+        except json.JSONDecodeError as e:
+            typer.echo(f"Error: Invalid JSON for --inputs: {e}", err=True)
+            raise typer.Exit(1)
+
+    outputs_dict = None
+    if outputs:
+        try:
+            outputs_dict = json.loads(outputs)
+        except json.JSONDecodeError as e:
+            typer.echo(f"Error: Invalid JSON for --outputs: {e}", err=True)
+            raise typer.Exit(1)
+
+    headers_dict = None
+    if headers_json:
+        try:
+            headers_dict = json.loads(headers_json)
+        except json.JSONDecodeError as e:
+            typer.echo(f"Error: Invalid JSON for --headers: {e}", err=True)
+            raise typer.Exit(1)
+
     try:
         client = get_client()
-        component_id = client.add_connected_agent_tool(
+        component_id = client.add_tool(
             bot_id=agent_id,
-            target_bot_id=target_agent_id,
+            tool_type=tool_type,
+            tool_id=tool_id,
             name=name,
             description=description,
-            pass_conversation_history=not no_history,
+            inputs=inputs_dict,
+            outputs=outputs_dict,
+            connection_ref=connection_ref,
+            no_history=no_history,
+            method=method,
+            headers=headers_dict,
+            body=body,
         )
 
         if component_id:
-            print_success(f"Connected agent tool created successfully!")
+            print_success(f"{tool_type.capitalize()} tool created successfully!")
             typer.echo(f"Component ID: {component_id}")
             typer.echo("")
             typer.echo("Note: You may need to publish the agent for changes to take effect.")
