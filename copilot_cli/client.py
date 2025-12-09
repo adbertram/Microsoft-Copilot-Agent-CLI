@@ -3381,18 +3381,23 @@ schemaName: {schema_name}
         return response.json()
 
     def list_connections(
-        self, connector_id: str, environment_id: Optional[str] = None
+        self, connector_id: Optional[str] = None, environment_id: Optional[str] = None
     ) -> list[dict]:
         """
-        List connections for a specific connector in the environment.
+        List connections in the environment.
+
+        If connector_id is provided, lists connections for that specific connector.
+        If connector_id is not provided, lists all connections across all connectors
+        using the admin API.
 
         Args:
-            connector_id: The connector's unique identifier (e.g., shared_office365)
+            connector_id: Optional connector identifier (e.g., shared_office365).
+                          If not provided, returns all connections.
             environment_id: Power Platform environment ID. If not provided,
                             will use DATAVERSE_ENVIRONMENT_ID from config.
 
         Returns:
-            List of connection objects for this connector
+            List of connection objects
         """
         # Get environment ID from config if not provided
         if not environment_id:
@@ -3406,11 +3411,21 @@ schemaName: {schema_name}
 
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
-        url = (
-            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
-            f"{connector_id}/connections"
-            f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
-        )
+        # Use different endpoints based on whether connector_id is provided
+        if connector_id:
+            # Connector-specific endpoint
+            url = (
+                f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
+                f"{connector_id}/connections"
+                f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
+            )
+        else:
+            # Admin endpoint to get all connections
+            url = (
+                f"https://api.powerapps.com/providers/Microsoft.PowerApps/scopes/admin/"
+                f"environments/{environment_id}/connections"
+                f"?api-version=2016-11-01"
+            )
 
         headers = {
             "Authorization": f"Bearer {powerapps_token}",

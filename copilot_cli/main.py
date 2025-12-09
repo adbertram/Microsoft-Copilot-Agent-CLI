@@ -38,8 +38,20 @@ except ImportError:
     pass
 
 try:
-    from .commands import connector
-    app.add_typer(connector.app, name="connector", help="List Power Platform connectors")
+    from .commands import connectors
+    app.add_typer(connectors.app, name="connectors", help="List and inspect Power Platform connectors")
+except ImportError:
+    pass
+
+try:
+    from .commands import connections
+    app.add_typer(connections.app, name="connections", help="Manage Power Platform connections (credentials)")
+except ImportError:
+    pass
+
+try:
+    from .commands import connection_references
+    app.add_typer(connection_references.app, name="connection-references", help="Manage connection references (solution-aware)")
 except ImportError:
     pass
 

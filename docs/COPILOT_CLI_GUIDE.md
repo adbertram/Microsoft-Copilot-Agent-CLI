@@ -11,7 +11,9 @@ The Copilot CLI provides access to:
 - **Knowledge** - Add file-based and Azure AI Search knowledge sources
 - **Analytics** - Query Application Insights telemetry for troubleshooting
 - **Transcripts** - View conversation history for debugging
-- **Connectors** - Manage Power Platform connectors and connections
+- **Connectors** - List and inspect Power Platform connectors (API definitions)
+- **Connections** - Manage authenticated credentials for connectors
+- **Connection References** - Manage solution-aware pointers to connections
 - **Tools** - Manage agent tools (prompts, REST APIs, MCP servers)
 - **Solutions** - Manage solutions, publishers, and solution components
 - **Flows** - List and view Power Automate cloud flows
@@ -586,21 +588,31 @@ copilot tool mcp get <server-id>
 
 ---
 
+## Connectors, Connections, and Connection References
+
+Power Platform uses three related concepts for integrations:
+
+- **Connectors** - API wrappers/proxies defining available actions (e.g., Asana, SharePoint, Office 365)
+- **Connections** - Authenticated credentials (OAuth tokens, API keys) stored per-user
+- **Connection References** - Solution-aware pointers to connections, stored in Dataverse
+
+---
+
 ## Connector Commands
 
-Manage Power Platform connectors and connections. Connectors are the integration points to external services, and connections are authenticated instances of those connectors.
+List and inspect Power Platform connectors (the API definitions).
 
 ### List Connectors
 
 ```bash
-copilot connector list                          # All connectors (JSON)
-copilot connector list --table                  # Formatted table
-copilot connector list --custom --table         # Custom connectors only
-copilot connector list --managed --table        # Managed (Microsoft) connectors only
-copilot connector list --filter "office365"     # Filter by name
+copilot connectors list                         # All connectors (JSON)
+copilot connectors list --table                 # Formatted table
+copilot connectors list --custom --table        # Custom connectors only
+copilot connectors list --managed --table       # Managed (Microsoft) connectors only
+copilot connectors list --filter "office365"    # Filter by name
 ```
 
-**List Options:**
+**Options:**
 | Option | Description |
 |--------|-------------|
 | `-c, --custom` | Show only custom connectors |
@@ -611,110 +623,100 @@ copilot connector list --filter "office365"     # Filter by name
 ### Get Connector Details
 
 ```bash
-copilot connector get <connector-id>
-copilot connector get shared_office365
-copilot connector get shared_asana
+copilot connectors get <connector-id>
+copilot connectors get shared_office365
+copilot connectors get shared_asana
 ```
 
-### Connection Commands
+---
 
-Manage connections (authenticated instances) for connectors. Connections authenticate access to external services like Asana, SharePoint, Azure AI Search, etc.
+## Connection Commands
 
-#### List Connections
+Manage Power Platform connections (authenticated credentials). Connections authenticate access to external services like Asana, SharePoint, Azure AI Search, etc.
+
+### List Connections
 
 ```bash
-# List all connection references in environment
-copilot connector connections list --table
+# List all connections in the environment
+copilot connections list --table
 
-# List connections for a specific connector
-copilot connector connections list --connector-id shared_office365
-copilot connector connections list -c shared_commondataserviceforapps --table
-copilot connector connections list -c shared_podio --connection-id abc123
+# Filter to a specific connector
+copilot connections list --connector-id shared_office365 --table
+copilot connections list -c shared_asana --table
 ```
 
-**List Options:**
+**Options:**
 | Option | Description |
 |--------|-------------|
-| `-c, --connector-id` | The connector ID (e.g., shared_office365). If omitted, lists all connection references. |
-| `--connection-id` | Filter to a specific connection ID |
+| `-c, --connector-id` | Filter to a specific connector (e.g., shared_office365). If omitted, lists all connections. |
 | `-t, --table` | Display as formatted table |
 
-#### Create Connection
-
-Create a new connection for a connector. Different connectors require different authentication methods.
+### Test Connection Authentication
 
 ```bash
-# OAuth connector (Asana, SharePoint, Dynamics 365, etc.)
-# Creates connection and outputs consent URL for browser-based auth
-copilot connector connections create -c shared_asana -n "My Asana" --oauth
-
-# Azure AI Search (API key authentication)
-copilot connector connections create -c shared_azureaisearch -n "My Search" \
-    --parameters '{"endpoint": "https://mysearch.search.windows.net", "api_key": "xxx"}'
-
-# API key connector (SendGrid, etc.)
-copilot connector connections create -c shared_sendgrid -n "SendGrid" \
-    --parameters '{"api_key": "SG.xxx"}'
-
-# Generic connector with parameters
-copilot connector connections create -c shared_sql -n "SQL Server" \
-    --parameters '{"server": "myserver.database.windows.net", "database": "mydb"}'
+copilot connections test --connector-id shared_office365
+copilot connections test -c shared_commondataserviceforapps --table
+copilot connections test -c shared_podio --connection-id abc123
 ```
 
-**Create Options:**
-| Option | Description |
-|--------|-------------|
-| `-c, --connector-id` | **(Required)** The connector ID (e.g., shared_asana, shared_office365) |
-| `-n, --name` | **(Required)** Display name for the connection |
-| `-p, --parameters` | JSON string of connection parameters (connector-specific) |
-| `--oauth` | Initiate OAuth flow - creates connection and outputs consent URL |
-| `--environment, --env` | Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified. |
-
-**Authentication Methods:**
-- **OAuth** (`--oauth`): For connectors like Asana, SharePoint, Dynamics 365. Creates connection and provides URL to complete browser-based authentication.
-- **API Key** (`--parameters`): For connectors with API key auth. Provide credentials in JSON format.
-- **Azure AI Search**: Special handling for `{"endpoint": "...", "api_key": "..."}` parameters.
-
-#### Delete Connection
-
-```bash
-copilot connector connections delete <connection-id> -c shared_asana
-copilot connector connections delete <connection-id> -c shared_office365 --force
-copilot connector connections delete <connection-id> -c shared_azureaisearch --env Default-xxx
-```
-
-**Delete Options:**
-| Option | Description |
-|--------|-------------|
-| `-c, --connector-id` | **(Required)** The connector ID |
-| `--environment, --env` | Power Platform environment ID |
-| `-f, --force` | Skip confirmation prompt |
-
-#### Test Connection Authentication
-
-```bash
-copilot connector connections auth-test --connector-id shared_office365
-copilot connector connections auth-test -c shared_commondataserviceforapps --table
-copilot connector connections auth-test -c shared_podio --connection-id abc123
-copilot connector connections auth-test -c shared_office365 --test-api
-```
-
-**Auth-Test Options:**
+**Options:**
 | Option | Description |
 |--------|-------------|
 | `-c, --connector-id` | **(Required)** The connector ID |
 | `--connection-id` | Test a specific connection ID (tests all if not provided) |
 | `-t, --table` | Display as formatted table |
-| `--test-api` | Also call the testConnection API endpoint (not all connectors support this) |
 
-#### Remove Connection Reference
+### Create Connection
 
-Remove a connection reference (solution-aware link) from Dataverse. This is different from deleting a connection.
+Create a new connection for a connector. Different connectors require different authentication methods.
 
 ```bash
-copilot connector connections remove <connection-ref-id>
-copilot connector connections remove <connection-ref-id> --force
+# OAuth connector (Asana, SharePoint, Dynamics 365, etc.)
+# Creates connection and opens browser for OAuth flow
+copilot connections create -c shared_asana -n "My Asana" --oauth
+
+# Azure AI Search (API key authentication)
+copilot connections create -c shared_azureaisearch -n "My Search" \
+    --parameters '{"endpoint": "https://mysearch.search.windows.net", "api_key": "xxx"}'
+
+# API key connector (SendGrid, etc.)
+copilot connections create -c shared_sendgrid -n "SendGrid" \
+    --parameters '{"api_key": "SG.xxx"}'
+
+# Generic connector with parameters
+copilot connections create -c shared_sql -n "SQL Server" \
+    --parameters '{"server": "myserver.database.windows.net", "database": "mydb"}'
 ```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID (e.g., shared_asana, shared_office365) |
+| `-n, --name` | **(Required)** Display name for the connection |
+| `-p, --parameters` | JSON string of connection parameters (connector-specific) |
+| `--oauth` | Initiate OAuth flow - creates connection and opens browser |
+| `--no-wait` | Don't wait for OAuth authentication to complete |
+| `--environment, --env` | Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified. |
+
+**Authentication Methods:**
+- **OAuth** (`--oauth`): For connectors like Asana, SharePoint, Dynamics 365. Creates connection and opens browser for authentication.
+- **API Key** (`--parameters`): For connectors with API key auth. Provide credentials in JSON format.
+- **Azure AI Search**: Special handling for `{"endpoint": "...", "api_key": "..."}` parameters.
+
+### Delete Connection
+
+```bash
+copilot connections delete <connection-id> -c shared_asana
+copilot connections delete <connection-id> -c shared_office365 --force
+copilot connections delete <connection-id> -c shared_azureaisearch --env Default-xxx
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID |
+| `--environment, --env` | Power Platform environment ID |
+| `-f, --force` | Skip confirmation prompt |
 
 **Connection Statuses:**
 | Status | Description |
@@ -722,6 +724,62 @@ copilot connector connections remove <connection-ref-id> --force
 | `Connected` | Connection is authenticated and ready to use |
 | `Error` | Connection has an authentication or configuration issue |
 | `Unauthenticated` | Connection needs to be authenticated (complete OAuth flow or check credentials) |
+
+---
+
+## Connection Reference Commands
+
+Manage connection references (solution-aware pointers to connections). Connection references allow flows and agents to reference a connection without being directly tied to it, making solutions portable across environments.
+
+### List Connection References
+
+```bash
+copilot connection-references list              # All connection references (JSON)
+copilot connection-references list --table      # Formatted table
+```
+
+### Get Connection Reference
+
+```bash
+copilot connection-references get <connection-ref-id>
+```
+
+### Update Connection Reference
+
+Update which connection a reference points to, or change its display name.
+
+```bash
+# Update the connection it points to
+copilot connection-references update <ref-id> --connection-id <new-conn-id>
+
+# Update the display name
+copilot connection-references update <ref-id> --name "Production Asana"
+
+# Update both
+copilot connection-references update <ref-id> -c <conn-id> -n "New Name"
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connection-id` | New connection ID to associate with this reference |
+| `-n, --name` | New display name for the connection reference |
+
+### Remove Connection Reference
+
+Remove a connection reference from Dataverse. This does NOT delete the underlying connection.
+
+```bash
+copilot connection-references remove <connection-ref-id>
+copilot connection-references remove <connection-ref-id> --force
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Skip confirmation prompt |
+
+**Note:** System-managed connection references (with 'msdyn_' prefix) cannot be removed.
 
 ---
 

@@ -6,7 +6,7 @@ from ..client import get_client
 from ..output import print_json, print_table, handle_api_error
 
 
-app = typer.Typer(help="List Power Platform connectors")
+app = typer.Typer(help="List and inspect Power Platform connectors")
 
 
 def is_custom_connector(connector: dict) -> bool:
@@ -54,7 +54,7 @@ def format_connector_for_display(connector: dict) -> dict:
 
 
 @app.command("list")
-def connector_list(
+def connectors_list(
     custom: bool = typer.Option(
         False,
         "--custom",
@@ -83,19 +83,20 @@ def connector_list(
     """
     List all available connectors in the environment.
 
-    This command lists all connectors available in the Power Platform
-    environment, including both managed (Microsoft) and custom connectors.
+    Connectors are proxies/wrappers around APIs that define what actions
+    are available (e.g., Asana, SharePoint, SQL Server). They represent
+    the "type" of service you can connect to.
 
     Connector Types:
       - Managed: Built-in connectors published by Microsoft
       - Custom: User-created connectors in the environment
 
     Examples:
-        copilot connector list
-        copilot connector list --table
-        copilot connector list --custom --table
-        copilot connector list --managed --table
-        copilot connector list --filter "office365" --table
+        copilot connectors list
+        copilot connectors list --table
+        copilot connectors list --custom --table
+        copilot connectors list --managed --table
+        copilot connectors list --filter "asana" --table
     """
     if custom and managed:
         typer.echo("Error: Cannot specify both --custom and --managed", err=True)
@@ -148,18 +149,22 @@ def connector_list(
 
 
 @app.command("get")
-def connector_get(
+def connectors_get(
     connector_id: str = typer.Argument(
         ...,
-        help="The connector's unique identifier (e.g., shared_office365)",
+        help="The connector's unique identifier (e.g., shared_asana, shared_office365)",
     ),
 ):
     """
     Get details for a specific connector.
 
+    Returns the full connector definition including available actions,
+    triggers, and connection parameters.
+
     Examples:
-        copilot connector get shared_office365
-        copilot connector get shared_sharepointonline
+        copilot connectors get shared_asana
+        copilot connectors get shared_office365
+        copilot connectors get shared_sharepointonline
     """
     try:
         client = get_client()
