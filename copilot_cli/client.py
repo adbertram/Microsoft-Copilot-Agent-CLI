@@ -2998,27 +2998,22 @@ schemaName: {schema_name}
             component_type=component_type,
         )
 
-    def list_connection_references(self, bot_id: Optional[str] = None) -> list[dict]:
+    def get_bot_connection_reference(self, bot_id: str) -> Optional[dict]:
         """
-        List connection references, optionally filtered by bot.
+        Get the provider connection reference for a specific bot.
 
         Args:
-            bot_id: Optional bot ID to filter connection references linked to a specific bot
+            bot_id: The bot's unique identifier
 
         Returns:
-            List of connection reference records
+            Connection reference record, or None if not found
         """
-        if bot_id:
-            # Get the bot's provider connection reference
-            bot = self.get_bot(bot_id)
-            provider_ref_id = bot.get("_providerconnectionreferenceid_value")
-            if provider_ref_id:
-                result = self.get(f"connectionreferences({provider_ref_id})")
-                return [result] if result else []
-            return []
-        else:
-            result = self.get("connectionreferences")
-            return result.get("value", [])
+        bot = self.get_bot(bot_id)
+        provider_ref_id = bot.get("_providerconnectionreferenceid_value")
+        if provider_ref_id:
+            result = self.get(f"connectionreferences({provider_ref_id})")
+            return result if result else None
+        return None
 
     # =========================================================================
     # Publisher Methods

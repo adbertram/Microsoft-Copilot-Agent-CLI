@@ -650,7 +650,14 @@ def list_connections(
     """
     try:
         client = get_client()
-        connections = client.list_connection_references(bot_id=agent_id)
+
+        if agent_id:
+            # Get the specific agent's provider connection reference
+            conn_ref = client.get_bot_connection_reference(agent_id)
+            connections = [conn_ref] if conn_ref else []
+        else:
+            # Get all connection references
+            connections = client.list_connection_references()
 
         if not connections:
             typer.echo("No connection references found.")
