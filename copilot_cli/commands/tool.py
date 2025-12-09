@@ -14,36 +14,42 @@ app = typer.Typer(help="Manage tools available to Copilot Studio agents")
 # Register type-specific subcommands
 app.add_typer(prompt.app, name="prompt", help="Manage AI Builder prompts")
 app.add_typer(restapi.app, name="restapi", help="Manage REST API tools")
-app.add_typer(connector.app, name="connector", help="Manage custom connectors")
+app.add_typer(connector.app, name="connector", help="Manage connectors")
 app.add_typer(mcp.app, name="mcp", help="Manage MCP servers")
 
 
 def format_unified_tool(tool: dict, tool_type: str) -> dict:
-    """Format a tool for unified display."""
+    """Format a tool for unified display with installed and managed status."""
     if tool_type == "prompt":
+        is_managed = tool.get("ismanaged", False)
         return {
             "name": tool.get("msdyn_name", ""),
             "type": "Prompt",
-            "subtype": "System" if tool.get("ismanaged", False) else "Custom",
-            "owner": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
+            "publisher": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
+            "installed": not is_managed,
+            "managed": is_managed,
             "id": tool.get("msdyn_aimodelid", ""),
         }
     elif tool_type == "restapi":
+        # REST APIs are always custom/installed
         return {
             "name": tool.get("displayname") or tool.get("name", ""),
             "type": "REST API",
-            "subtype": "Custom",
-            "owner": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
+            "publisher": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
+            "installed": True,
+            "managed": False,
             "id": tool.get("connectorid", ""),
         }
     elif tool_type == "connector":
         props = tool.get("properties", {})
-        # Only include custom connectors in unified view
+        from .connector import is_custom_connector
+        is_custom = is_custom_connector(tool)
         return {
             "name": props.get("displayName") or tool.get("name", ""),
             "type": "Connector",
-            "subtype": "Custom",
-            "owner": props.get("publisher", ""),
+            "publisher": props.get("publisher", ""),
+            "installed": is_custom,
+            "managed": not is_custom,
             "id": tool.get("name", ""),
         }
     elif tool_type == "mcp":
@@ -52,8 +58,9 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
         return {
             "name": props.get("displayName") or tool.get("name", ""),
             "type": "MCP",
-            "subtype": "Custom" if is_custom else "Managed",
-            "owner": props.get("publisher", ""),
+            "publisher": props.get("publisher", ""),
+            "installed": is_custom,
+            "managed": not is_custom,
             "id": tool.get("name", ""),
         }
     return {}
@@ -67,11 +74,11 @@ def tool_list(
         "-T",
         help="Filter by tool type: prompt, restapi, connector, mcp",
     ),
-    custom_only: bool = typer.Option(
+    installed_only: bool = typer.Option(
         False,
-        "--custom",
-        "-c",
-        help="Show only custom (user-created) tools",
+        "--installed",
+        "-i",
+        help="Show only tools installed in your environment",
     ),
     filter_text: Optional[str] = typer.Option(
         None,
@@ -87,24 +94,28 @@ def tool_list(
     ),
 ):
     """
-    List all tools available to Copilot Studio agents.
+    List all tools available to add to Copilot Studio agents.
 
-    Shows a unified view of all tool types: prompts, REST APIs, custom connectors,
-    and MCP servers. Use --type to filter by specific tool type.
+    Shows the full catalog of available tools: prompts, connectors, REST APIs,
+    and MCP servers. The 'Installed' column shows which tools are configured
+    in your environment.
 
     Tool Types:
       - prompt: AI Builder prompts for text analysis and generation
+      - connector: Power Platform connectors (1000+ available)
       - restapi: REST API tools defined with OpenAPI specs
-      - connector: Custom Power Platform connectors
       - mcp: Model Context Protocol servers
 
+    Installed Status:
+      - Yes: Custom tool created in your environment
+      - No: Available from catalog, not yet installed
+      - System: Built-in system tool (always available)
+
     Examples:
-        copilot tool list                        # All tools
-        copilot tool list --table                # All tools as table
-        copilot tool list --type prompt          # Only prompts
-        copilot tool list --type restapi --table # Only REST APIs
-        copilot tool list --custom --table       # Only custom tools
-        copilot tool list --filter "podio"       # Search by name
+        copilot tool list --table                  # All available tools
+        copilot tool list --installed --table      # Only installed tools
+        copilot tool list --type connector --table # All connectors
+        copilot tool list --filter "excel" --table # Search by name
     """
     valid_types = ["prompt", "restapi", "connector", "mcp"]
     if tool_type and tool_type.lower() not in valid_types:
@@ -121,30 +132,32 @@ def tool_list(
         # Fetch each tool type
         if "prompt" in types_to_fetch:
             prompts = client.list_prompts()
-            if custom_only:
-                prompts = [p for p in prompts if not p.get("ismanaged", False)]
             for p in prompts:
-                all_tools.append(format_unified_tool(p, "prompt"))
+                formatted = format_unified_tool(p, "prompt")
+                if not installed_only or formatted["installed"]:
+                    all_tools.append(formatted)
 
         if "restapi" in types_to_fetch:
+            # REST APIs are always custom/installed
             restapis = client.list_rest_apis()
             for r in restapis:
                 all_tools.append(format_unified_tool(r, "restapi"))
 
         if "connector" in types_to_fetch:
+            # Show ALL connectors from catalog
             connectors = client.list_connectors()
-            # Only include custom connectors in unified view
-            from .connector import is_custom_connector
-            connectors = [c for c in connectors if is_custom_connector(c)]
             for c in connectors:
-                all_tools.append(format_unified_tool(c, "connector"))
+                formatted = format_unified_tool(c, "connector")
+                if not installed_only or formatted["installed"]:
+                    all_tools.append(formatted)
 
         if "mcp" in types_to_fetch:
+            # Show ALL MCP servers from catalog
             mcps = client.list_mcp_servers()
-            if custom_only:
-                mcps = [m for m in mcps if m.get("properties", {}).get("isCustomApi", False)]
             for m in mcps:
-                all_tools.append(format_unified_tool(m, "mcp"))
+                formatted = format_unified_tool(m, "mcp")
+                if not installed_only or formatted["installed"]:
+                    all_tools.append(formatted)
 
         if not all_tools:
             typer.echo("No tools found.")
@@ -166,8 +179,8 @@ def tool_list(
         if table:
             print_table(
                 all_tools,
-                columns=["name", "type", "subtype", "owner", "id"],
-                headers=["Name", "Type", "Subtype", "Owner", "ID"],
+                columns=["name", "type", "publisher", "installed", "managed", "id"],
+                headers=["Name", "Type", "Publisher", "Installed", "Managed", "ID"],
             )
         else:
             print_json(all_tools)
