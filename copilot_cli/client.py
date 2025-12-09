@@ -1906,9 +1906,9 @@ action:
         # Use operation_id as name if not provided
         resolved_name = name or operation_id
 
-        # Generate clean name for schema
-        clean_name = re.sub(r'[^a-zA-Z0-9]', '', resolved_name)
-        schema_name = f"{bot_schema}.InvokeConnectorTaskAction.{clean_name}"
+        # Generate clean name for schema - UI uses .action. pattern
+        clean_name = re.sub(r'[^a-zA-Z0-9-]', '', resolved_name.replace(' ', '-'))
+        schema_name = f"{bot_schema}.action.{clean_name}"
 
         # Use swagger description if not provided by user
         resolved_description = description
