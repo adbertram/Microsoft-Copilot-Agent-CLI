@@ -48,10 +48,11 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
         }
     elif tool_type == "mcp":
         props = tool.get("properties", {})
+        is_custom = props.get("isCustomApi", False)
         return {
             "name": props.get("displayName") or tool.get("name", ""),
             "type": "MCP",
-            "subtype": props.get("releaseTag", ""),
+            "subtype": "Custom" if is_custom else "Managed",
             "owner": props.get("publisher", ""),
             "id": tool.get("name", ""),
         }
@@ -140,6 +141,8 @@ def tool_list(
 
         if "mcp" in types_to_fetch:
             mcps = client.list_mcp_servers()
+            if custom_only:
+                mcps = [m for m in mcps if m.get("properties", {}).get("isCustomApi", False)]
             for m in mcps:
                 all_tools.append(format_unified_tool(m, "mcp"))
 
