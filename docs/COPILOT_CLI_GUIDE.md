@@ -7,11 +7,15 @@ Complete reference for the `copilot` command-line interface for managing Microso
 The Copilot CLI provides access to:
 - **Agents** - Create, update, delete, publish, and test agents
 - **Topics** - Manage conversation flows (list, create, update, delete, enable/disable)
-- **Tools** - Connect sub-agents as tools for orchestration
+- **Agent Tools** - Connect sub-agents as tools for orchestration
 - **Knowledge** - Add file-based and Azure AI Search knowledge sources
 - **Analytics** - Query Application Insights telemetry for troubleshooting
 - **Transcripts** - View conversation history for debugging
 - **Connections** - Manage Power Platform connections
+- **Tools** - Unified tool management (prompts, connectors, REST APIs, MCP servers)
+- **Solutions** - Manage solutions, publishers, and solution components
+- **Flows** - List and view Power Automate cloud flows
+- **Environments** - List and view Power Platform environments
 
 ## Authentication
 
@@ -143,11 +147,14 @@ copilot agent prompt <bot-id> -m "Hello" -s "xxx" --verbose --json
 | `-v, --verbose` | Show detailed progress |
 | `-j, --json` | Output as JSON |
 | `--timeout` | Total timeout in seconds (default: 120) |
+| `--max-polls` | Maximum polling attempts (default: 30) |
+| `--poll-interval` | Seconds between polls (default: 3) |
 
 **Environment Variables:**
 - `DIRECTLINE_SECRET` - Direct Line secret
 - `ENTRA_CLIENT_ID` - Entra ID client ID
 - `ENTRA_TENANT_ID` - Entra ID tenant ID
+- `ENTRA_SCOPE` - OAuth scope (default: https://api.powerplatform.com/.default)
 - `BOT_TOKEN_ENDPOINT` - Bot token endpoint
 
 ---
@@ -233,11 +240,11 @@ copilot agent topic delete <topic-id> --force   # Delete without confirmation
 
 ---
 
-## Tool Commands (Connected Agents)
+## Agent Tool Commands (Connected Agents)
 
 Tools allow an agent to invoke other agents as sub-agents during orchestration.
 
-### List Tools
+### List Agent Tools
 
 ```bash
 copilot agent tool list --agentId <agent-id>              # List all tools
@@ -274,7 +281,7 @@ copilot agent tool add -a <parent-id> -t <child-id> --description "Handles X tas
 - Must be published
 - Must have "Let other agents connect" enabled in settings
 
-### Remove Tool
+### Remove Agent Tool
 
 ```bash
 copilot agent tool remove <component-id>           # Remove (with confirmation)
@@ -330,40 +337,83 @@ copilot agent knowledge remove --bot <bot-id> <component-id> --force
 
 ---
 
-## Prompt Commands (AI Builder)
+## Tool Commands (Unified Tool Management)
 
-Manage AI Builder prompts that can be used as agent tools for classification, extraction, and content generation.
+The `copilot tool` command provides unified management of all tool types available to Copilot Studio agents.
 
-### List Prompts
-
-```bash
-copilot prompt list                     # List all prompts (JSON)
-copilot prompt list --table             # List as formatted table
-copilot prompt list --custom            # Show only custom prompts
-copilot prompt list --system            # Show only system prompts
-copilot prompt list --filter "classify" # Filter by name
-```
-
-### Get Prompt Details
+### List All Tools
 
 ```bash
-copilot prompt get <prompt-id>          # Get prompt metadata
-copilot prompt get <prompt-id> --text   # Get prompt text and configuration
-```
-
-### Update Prompt
-
-Update the prompt text or model type for an AI Builder prompt. The prompt is automatically republished after updating.
-
-```bash
-copilot prompt update <prompt-id> --text "New prompt text..."
-copilot prompt update <prompt-id> --file prompt.txt
-copilot prompt update <prompt-id> --model gpt-4o
-copilot prompt update <prompt-id> --file prompt.txt --model gpt-4o
-copilot prompt update <prompt-id> --file prompt.txt --no-publish
+copilot tool list                              # List all tools (JSON)
+copilot tool list --table                      # Formatted table
+copilot tool list --installed --table          # Only installed tools
+copilot tool list --type prompt --table        # Filter by type
+copilot tool list --type connector --table     # Filter by type
+copilot tool list --filter "excel" --table     # Search by name
 ```
 
 **Options:**
+| Option | Description |
+|--------|-------------|
+| `-T, --type` | Filter by type: `prompt`, `connector`, `mcp` |
+| `-i, --installed` | Show only tools installed in your environment |
+| `-f, --filter` | Filter by name (case-insensitive) |
+| `-t, --table` | Display as formatted table |
+
+**Output Columns:**
+- **Name** - Tool display name
+- **Type** - Tool type (Prompt, Connector, Custom Connector, MCP)
+- **Subtype** - For custom connectors: Rest Api, Custom Connector, Flow, Dataverse
+- **Publisher** - Tool publisher
+- **Installed** - Whether the tool is installed in your environment
+- **Deps** - Number of dependent components (for installed tools)
+- **ID** - Unique identifier
+
+### Remove Tool
+
+Remove a custom tool (prompt or REST API) from the environment.
+
+```bash
+copilot tool remove <tool-id>                      # Auto-detect type
+copilot tool remove <tool-id> --type prompt        # Specify type
+copilot tool remove <tool-id> --type restapi       # Specify type
+copilot tool remove <tool-id> --force              # Skip confirmation
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-T, --type` | Tool type: `prompt`, `restapi` (auto-detected if not specified) |
+| `-f, --force` | Skip confirmation prompt |
+
+**Note:** When removing REST APIs, associated AIPlugin wrappers are automatically deleted.
+
+---
+
+### Prompt Commands (AI Builder)
+
+Manage AI Builder prompts that can be used as agent tools.
+
+```bash
+# List prompts
+copilot tool prompt list                        # All prompts (JSON)
+copilot tool prompt list --table                # Formatted table
+copilot tool prompt list --custom --table       # Custom prompts only
+copilot tool prompt list --system --table       # System prompts only
+copilot tool prompt list --filter "classify"    # Filter by name
+
+# Get prompt details
+copilot tool prompt get <prompt-id>             # Metadata
+copilot tool prompt get <prompt-id> --text      # Prompt text and configuration
+
+# Update prompt
+copilot tool prompt update <prompt-id> --text "New prompt text..."
+copilot tool prompt update <prompt-id> --file prompt.txt
+copilot tool prompt update <prompt-id> --model gpt-4o
+copilot tool prompt update <prompt-id> --file prompt.txt --no-publish
+```
+
+**Update Options:**
 | Option | Description |
 |--------|-------------|
 | `-t, --text` | New prompt text (inline) |
@@ -371,7 +421,242 @@ copilot prompt update <prompt-id> --file prompt.txt --no-publish
 | `-m, --model` | Model type (e.g., gpt-41-mini, gpt-4o, gpt-4o-mini) |
 | `--no-publish` | Skip republishing (changes won't be live) |
 
-**Note:** Updates are automatically published. Use `--no-publish` to update without publishing.
+---
+
+### Connector Commands
+
+List and view Power Platform connectors.
+
+```bash
+# List connectors
+copilot tool connector list                     # All connectors (JSON)
+copilot tool connector list --table             # Formatted table
+copilot tool connector list --custom --table    # Custom connectors only
+copilot tool connector list --managed --table   # Managed (Microsoft) connectors only
+copilot tool connector list --filter "office365"
+
+# Get connector details
+copilot tool connector get <connector-id>
+```
+
+**List Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --custom` | Show only custom connectors |
+| `-m, --managed` | Show only managed (Microsoft) connectors |
+| `-f, --filter` | Filter by name or publisher |
+| `-t, --table` | Display as formatted table |
+
+---
+
+### REST API Commands
+
+List and view REST API tools (custom connectors defined with OpenAPI specs).
+
+```bash
+# List REST APIs
+copilot tool restapi list                       # All REST APIs (JSON)
+copilot tool restapi list --table               # Formatted table
+copilot tool restapi list --filter "podio"
+
+# Get REST API details
+copilot tool restapi get <connector-id>
+```
+
+---
+
+### MCP Server Commands
+
+List and view Model Context Protocol servers.
+
+```bash
+# List MCP servers
+copilot tool mcp list                           # All MCP servers (JSON)
+copilot tool mcp list --table                   # Formatted table
+
+# Get MCP server details
+copilot tool mcp get <server-id>
+```
+
+---
+
+## Solution Commands
+
+Manage Dataverse solutions and solution components.
+
+### List Solutions
+
+```bash
+copilot solution list                           # Unmanaged solutions only (JSON)
+copilot solution list --table                   # Formatted table
+copilot solution list --all                     # Include managed solutions
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-t, --table` | Display as formatted table |
+| `-a, --all` | Include managed solutions (default: unmanaged only) |
+
+### Get Solution Details
+
+```bash
+copilot solution get <solution-id>
+```
+
+### Create Solution
+
+```bash
+copilot solution create --name "My Solution" --unique-name MySolution --publisher MyPublisher
+copilot solution create -n "My Solution" -u MySolution -p MyPublisher -v 1.0.0.0
+copilot solution create -n "My Solution" -u MySolution -p MyPublisher -d "Description"
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-n, --name` | Display name for the solution (required) |
+| `-u, --unique-name` | Unique name (no spaces, required) |
+| `-p, --publisher` | Publisher's unique name or GUID (required) |
+| `-v, --version` | Version (default: 1.0.0.0) |
+| `-d, --description` | Optional description |
+
+### Delete Solution
+
+```bash
+copilot solution delete <solution-id>
+```
+
+### Add Agent to Solution
+
+```bash
+copilot solution add-agent --solution MySolution --bot <bot-id>
+copilot solution add-agent -s MySolution -b <bot-id> --no-connection
+copilot solution add-agent -s MySolution -b <bot-id> --no-required
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-s, --solution` | Solution's unique name (required) |
+| `-b, --bot` | Bot's unique identifier (required) |
+| `--no-connection` | Don't add bot's connection reference |
+| `--no-required` | Don't add required dependent components |
+
+### Remove Agent from Solution
+
+```bash
+copilot solution remove-agent --solution MySolution --bot <bot-id>
+```
+
+### Add/Remove Connection Reference
+
+```bash
+copilot solution add-connection --solution MySolution --connection <connection-ref-id>
+copilot solution remove-connection --solution MySolution --connection <connection-ref-id>
+```
+
+---
+
+### Publisher Commands
+
+```bash
+# List publishers
+copilot solution publisher list
+copilot solution publisher list --table
+
+# Get publisher details
+copilot solution publisher get <publisher-id>
+
+# Create publisher
+copilot solution publisher create \
+    --name "My Publisher" \
+    --unique-name MyPublisher \
+    --prefix mypub \
+    --option-prefix 10000
+copilot solution publisher create -n "My Publisher" -u MyPublisher -x mypub -o 10000 -d "Description"
+
+# Delete publisher
+copilot solution publisher delete <publisher-id>
+```
+
+**Create Options:**
+| Option | Description |
+|--------|-------------|
+| `-n, --name` | Display name (required) |
+| `-u, --unique-name` | Unique name, no spaces (required) |
+| `-x, --prefix` | Customization prefix, 2-8 lowercase letters (required) |
+| `-o, --option-prefix` | Option value prefix, 10000-99999 (required) |
+| `-d, --description` | Optional description |
+
+---
+
+### Connection Reference Commands
+
+```bash
+# List connection references
+copilot solution connection list
+copilot solution connection list --table
+```
+
+---
+
+## Flow Commands
+
+List and view Power Automate cloud flows.
+
+### List Flows
+
+```bash
+copilot flow list                               # All flows (JSON)
+copilot flow list --table                       # Formatted table
+copilot flow list --category 5                  # Instant flows only
+copilot flow list --category 0                  # Automated flows only
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --category` | Filter by category: 0=Automated, 5=Instant, 6=Business Process |
+| `-t, --table` | Display as formatted table |
+
+**Flow Categories:**
+- **0** - Automated (automated/scheduled flows)
+- **5** - Instant (button/HTTP triggered flows) - best for agent tools
+- **6** - Business Process flows
+
+### Get Flow Details
+
+```bash
+copilot flow get <flow-id>
+```
+
+---
+
+## Environment Commands
+
+List and view Power Platform environments.
+
+### List Environments
+
+```bash
+copilot environment list                        # All environments (JSON)
+copilot environment list --table                # Formatted table
+copilot environment list --filter "dev"         # Filter by name
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-f, --filter` | Filter by name (case-insensitive) |
+| `-t, --table` | Display as formatted table |
+
+### Get Environment Details
+
+```bash
+copilot environment get <environment-id>
+copilot environment get Default-<tenant-id>
+```
 
 ---
 
@@ -596,4 +881,9 @@ echo $DATAVERSE_URL
    ```bash
    copilot agent topic list --agentId <bot-id> --table
    copilot agent topic get <topic-id> --yaml
+   ```
+
+5. **Check tool dependencies:**
+   ```bash
+   copilot tool list --installed --table
    ```
