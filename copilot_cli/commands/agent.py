@@ -41,7 +41,7 @@ def list_agents(
     """
     List all Copilot Studio agents in the environment.
 
-    Returns agents with their bot_id, name, schema name, and status.
+    Returns agents with their agent_id, name, schema name, and status.
 
     Examples:
         copilot agent list
@@ -64,7 +64,7 @@ def list_agents(
             print_table(
                 formatted,
                 columns=["name", "botid", "statecode", "statuscode"],
-                headers=["Name", "Bot ID", "State", "Status"],
+                headers=["Name", "Agent ID", "State", "Status"],
             )
         else:
             if all_fields:
@@ -79,12 +79,12 @@ def list_agents(
 
 @app.command("get")
 def get_agent(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     include_components: bool = typer.Option(
         False,
         "--components",
         "-c",
-        help="Include bot components (topics, triggers, etc.)",
+        help="Include agent components (topics, triggers, etc.)",
     ),
 ):
     """
@@ -96,10 +96,10 @@ def get_agent(
     """
     try:
         client = get_client()
-        bot = client.get_bot(bot_id)
+        bot = client.get_bot(agent_id)
 
         if include_components:
-            components = client.get_bot_components(bot_id)
+            components = client.get_bot_components(agent_id)
             bot["components"] = components
 
         print_json(bot)
@@ -110,7 +110,7 @@ def get_agent(
 
 @app.command("remove")
 def remove_agent(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     force: bool = typer.Option(
         False,
         "--force",
@@ -128,18 +128,18 @@ def remove_agent(
     try:
         client = get_client()
 
-        # Get bot details first to show name in confirmation
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent details first to show name in confirmation
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
         if not force:
-            confirm = typer.confirm(f"Are you sure you want to delete agent '{bot_name}'?")
+            confirm = typer.confirm(f"Are you sure you want to delete agent '{agent_name}'?")
             if not confirm:
                 typer.echo("Aborted.")
                 raise typer.Exit(0)
 
-        client.delete_bot(bot_id)
-        print_success(f"Agent '{bot_name}' deleted successfully.")
+        client.delete_bot(agent_id)
+        print_success(f"Agent '{agent_name}' deleted successfully.")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
@@ -147,7 +147,7 @@ def remove_agent(
 
 @app.command("publish")
 def publish_agent(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
 ):
     """
     Publish a Copilot Studio agent.
@@ -163,16 +163,16 @@ def publish_agent(
     try:
         client = get_client()
 
-        # Get bot details first to show name
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent details first to show name
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        typer.echo(f"Publishing agent '{bot_name}'...")
+        typer.echo(f"Publishing agent '{agent_name}'...")
 
-        result = client.publish_bot(bot_id)
+        result = client.publish_bot(agent_id)
 
         if result.get("status") == "success":
-            print_success(f"Agent '{bot_name}' published successfully!")
+            print_success(f"Agent '{agent_name}' published successfully!")
             if result.get("PublishedBotContentId"):
                 typer.echo(f"Published Content ID: {result['PublishedBotContentId']}")
         else:
@@ -184,7 +184,7 @@ def publish_agent(
 
 @app.command("update")
 def update_agent(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     name: Optional[str] = typer.Option(
         None,
         "--name",
@@ -220,11 +220,11 @@ def update_agent(
     Note: Model selection and web search must be configured via the Copilot Studio portal UI.
 
     Examples:
-        copilot agent update <bot-id> --name "New Name"
-        copilot agent update <bot-id> --description "New description"
-        copilot agent update <bot-id> --instructions "New system prompt"
-        copilot agent update <bot-id> --instructions-file ./prompt.txt
-        copilot agent update <bot-id> --no-orchestration
+        copilot agent update <agent-id> --name "New Name"
+        copilot agent update <agent-id> --description "New description"
+        copilot agent update <agent-id> --instructions "New system prompt"
+        copilot agent update <agent-id> --instructions-file ./prompt.txt
+        copilot agent update <agent-id> --no-orchestration
     """
     try:
         # Handle instructions from file if provided
@@ -242,19 +242,19 @@ def update_agent(
 
         client = get_client()
 
-        # Get current bot name for success message
-        current_bot = client.get_bot(bot_id)
-        bot_name = name if name else current_bot.get("name", bot_id)
+        # Get current agent name for success message
+        current_bot = client.get_bot(agent_id)
+        agent_name = name if name else current_bot.get("name", agent_id)
 
         client.update_bot(
-            bot_id=bot_id,
+            bot_id=agent_id,
             name=name,
             instructions=agent_instructions,
             description=description,
             orchestration=orchestration,
         )
 
-        print_success(f"Agent '{bot_name}' updated successfully.")
+        print_success(f"Agent '{agent_name}' updated successfully.")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
@@ -347,9 +347,9 @@ DIRECTLINE_URL = "https://directline.botframework.com/v3/directline"
 
 @app.command("prompt")
 def prompt_agent(
-    bot_id: str = typer.Argument(
+    agent_id: str = typer.Argument(
         ...,
-        help="The bot's unique identifier (GUID)",
+        help="The agent's unique identifier (GUID)",
     ),
     message: str = typer.Option(
         ...,
@@ -386,7 +386,7 @@ def prompt_agent(
     token_endpoint: Optional[str] = typer.Option(
         None,
         "--token-endpoint",
-        help="Bot token endpoint URL (from Copilot Studio > Channels > Mobile app)",
+        help="Agent token endpoint URL (from Copilot Studio > Channels > Mobile app)",
     ),
     max_polls: int = typer.Option(
         30,
@@ -455,26 +455,26 @@ def prompt_agent(
 
     Where:
     - {ENV}: Your environment ID (found in Copilot Studio > Channels > Mobile app)
-    - {BOT_SCHEMA_NAME}: Your agent's schema name (e.g., cr83c_myAgent)
+    - {AGENT_SCHEMA_NAME}: Your agent's schema name (e.g., cr83c_myAgent)
 
     Examples:
         # Using Direct Line secret
-        copilot agent prompt <bot-id> --message "Hello" --secret "your-secret"
+        copilot agent prompt <agent-id> --message "Hello" --secret "your-secret"
 
         # Using Entra ID authentication
-        copilot agent prompt <bot-id> -m "Hello" --entra-id \\
+        copilot agent prompt <agent-id> -m "Hello" --entra-id \\
             --client-id <app-client-id> --tenant-id <tenant-id> \\
-            --token-endpoint "https://{ENV}.environment.api.powerplatform.com/powervirtualagents/botsbyschema/{BOT}/directline/token?api-version=2022-03-01-preview"
+            --token-endpoint "https://{ENV}.environment.api.powerplatform.com/powervirtualagents/botsbyschema/{AGENT}/directline/token?api-version=2022-03-01-preview"
 
         # With file attachment
-        copilot agent prompt <bot-id> -m "Review this" --file ./draft.docx --secret "xxx"
+        copilot agent prompt <agent-id> -m "Review this" --file ./draft.docx --secret "xxx"
 
     Environment Variables:
         DIRECTLINE_SECRET - Direct Line secret (alternative to --secret)
         ENTRA_CLIENT_ID - Entra ID client ID (alternative to --client-id)
         ENTRA_TENANT_ID - Entra ID tenant ID (alternative to --tenant-id)
         ENTRA_SCOPE - OAuth scope (default: https://api.powerplatform.com/.default)
-        BOT_TOKEN_ENDPOINT - Bot token endpoint (alternative to --token-endpoint)
+        AGENT_TOKEN_ENDPOINT - Agent token endpoint (alternative to --token-endpoint)
     """
     try:
         # Determine authentication method
@@ -487,7 +487,7 @@ def prompt_agent(
             entra_tenant_id = tenant_id or os.environ.get("ENTRA_TENANT_ID")
             # Default to Power Platform API scope with CopilotStudio.Copilots.Invoke permission
             entra_scope = scope or os.environ.get("ENTRA_SCOPE") or "https://api.powerplatform.com/.default"
-            bot_token_endpoint = token_endpoint or os.environ.get("BOT_TOKEN_ENDPOINT")
+            agent_token_endpoint = token_endpoint or os.environ.get("AGENT_TOKEN_ENDPOINT") or os.environ.get("BOT_TOKEN_ENDPOINT")
 
             if not entra_client_id:
                 typer.echo("Error: --client-id or ENTRA_CLIENT_ID env var required for Entra ID auth", err=True)
@@ -495,8 +495,8 @@ def prompt_agent(
             if not entra_tenant_id:
                 typer.echo("Error: --tenant-id or ENTRA_TENANT_ID env var required for Entra ID auth", err=True)
                 raise typer.Exit(1)
-            if not bot_token_endpoint:
-                typer.echo("Error: --token-endpoint or BOT_TOKEN_ENDPOINT env var required for Entra ID auth", err=True)
+            if not agent_token_endpoint:
+                typer.echo("Error: --token-endpoint or AGENT_TOKEN_ENDPOINT env var required for Entra ID auth", err=True)
                 typer.echo("Get endpoint from: Copilot Studio > Channels > Mobile app > Token Endpoint", err=True)
                 raise typer.Exit(1)
 
@@ -588,7 +588,7 @@ def prompt_agent(
 
             with httpx.Client(timeout=30.0) as token_client:
                 token_response = token_client.get(
-                    bot_token_endpoint,
+                    agent_token_endpoint,
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
 
@@ -685,7 +685,7 @@ def prompt_agent(
 
         # Start conversation via Direct Line API
         if verbose:
-            typer.echo(f"Starting conversation with agent {bot_id}...")
+            typer.echo(f"Starting conversation with agent {agent_id}...")
 
         with httpx.Client(timeout=30.0) as client:
             conv_response = client.post(
@@ -889,9 +889,9 @@ def prompt_agent(
 
 
 # Knowledge source commands as a subgroup
-# Usage: copilot agent knowledge list --bot <bot-id>
-#        copilot agent knowledge file add --bot <bot-id> ...
-#        copilot agent knowledge azure-ai-search add --bot <bot-id> ...
+# Usage: copilot agent knowledge list --agent <agent-id>
+#        copilot agent knowledge file add --agent <agent-id> ...
+#        copilot agent knowledge azure-ai-search add --agent <agent-id> ...
 
 knowledge_app = typer.Typer(help="Manage knowledge sources for an agent")
 
@@ -916,11 +916,11 @@ def format_knowledge_source(source: dict) -> dict:
 
 @knowledge_app.command("list")
 def knowledge_list(
-    bot_id: str = typer.Option(
+    agent_id: str = typer.Option(
         ...,
-        "--bot",
-        "-b",
-        help="The bot's unique identifier (GUID)",
+        "--agent",
+        "-a",
+        help="The agent's unique identifier (GUID)",
     ),
     source_type: Optional[str] = typer.Option(
         None,
@@ -938,13 +938,13 @@ def knowledge_list(
     List knowledge sources for an agent.
 
     Examples:
-        copilot agent knowledge list --bot <bot-id>
-        copilot agent knowledge list --bot <bot-id> --table
-        copilot agent knowledge list --bot <bot-id> --type file
+        copilot agent knowledge list --agent <agent-id>
+        copilot agent knowledge list --agent <agent-id> --table
+        copilot agent knowledge list --agent <agent-id> --type file
     """
     try:
         client = get_client()
-        sources = client.list_knowledge_sources(bot_id, source_type=source_type)
+        sources = client.list_knowledge_sources(agent_id, source_type=source_type)
 
         if not sources:
             typer.echo("No knowledge sources found for this agent.")
@@ -967,11 +967,11 @@ def knowledge_list(
 
 @knowledge_app.command("remove")
 def knowledge_remove(
-    bot_id: str = typer.Option(
+    agent_id: str = typer.Option(
         ...,
-        "--bot",
-        "-b",
-        help="The bot's unique identifier (GUID)",
+        "--agent",
+        "-a",
+        help="The agent's unique identifier (GUID)",
     ),
     component_id: str = typer.Argument(..., help="The knowledge source component's unique identifier (GUID)"),
     force: bool = typer.Option(
@@ -985,8 +985,8 @@ def knowledge_remove(
     Remove a knowledge source from an agent.
 
     Examples:
-        copilot agent knowledge remove --bot <bot-id> <component-id>
-        copilot agent knowledge remove --bot <bot-id> <component-id> --force
+        copilot agent knowledge remove --agent <agent-id> <component-id>
+        copilot agent knowledge remove --agent <agent-id> <component-id> --force
     """
     try:
         if not force:
@@ -1009,11 +1009,11 @@ file_app = typer.Typer(help="Manage file-based knowledge sources")
 
 @file_app.command("add")
 def file_add(
-    bot_id: str = typer.Option(
+    agent_id: str = typer.Option(
         ...,
-        "--bot",
-        "-b",
-        help="The bot's unique identifier (GUID)",
+        "--agent",
+        "-a",
+        help="The agent's unique identifier (GUID)",
     ),
     name: str = typer.Option(
         ...,
@@ -1046,8 +1046,8 @@ def file_add(
     Provide content either via --content or --file.
 
     Examples:
-        copilot agent knowledge file add --bot <bot-id> --name "FAQ" --content "Q: What? A: Test."
-        copilot agent knowledge file add --bot <bot-id> --name "Guide" --file ./guide.md
+        copilot agent knowledge file add --agent <agent-id> --name "FAQ" --content "Q: What? A: Test."
+        copilot agent knowledge file add --agent <agent-id> --name "Guide" --file ./guide.md
     """
     try:
         # Validate input
@@ -1074,7 +1074,7 @@ def file_add(
 
         client = get_client()
         component_id = client.add_file_knowledge_source(
-            bot_id=bot_id,
+            bot_id=agent_id,
             name=name,
             content=knowledge_content,
             description=description,
@@ -1097,11 +1097,11 @@ azure_search_app = typer.Typer(help="Manage Azure AI Search knowledge sources")
 
 @azure_search_app.command("add")
 def azure_search_add(
-    bot_id: str = typer.Option(
+    agent_id: str = typer.Option(
         ...,
-        "--bot",
-        "-b",
-        help="The bot's unique identifier (GUID)",
+        "--agent",
+        "-a",
+        help="The agent's unique identifier (GUID)",
     ),
     name: str = typer.Option(
         ...,
@@ -1137,7 +1137,7 @@ def azure_search_add(
     """
     Add an Azure AI Search knowledge source to an agent (EXPERIMENTAL).
 
-    WARNING: This command creates a bot component record but the knowledge source
+    WARNING: This command creates an agent component record but the knowledge source
     may not appear in Copilot Studio UI. Copilot Studio requires a Power Platform
     connection to be properly linked, which involves internal configuration not
     exposed via public APIs.
@@ -1147,7 +1147,7 @@ def azure_search_add(
     2. Link the connection to your agent via the Copilot Studio UI
 
     Examples:
-        copilot agent knowledge azure-ai-search add --bot <bot-id> \\
+        copilot agent knowledge azure-ai-search add --agent <agent-id> \\
             --name "Product Docs" \\
             --endpoint https://mysearch.search.windows.net \\
             --index products-index \\
@@ -1156,7 +1156,7 @@ def azure_search_add(
     try:
         client = get_client()
         component_id = client.add_azure_ai_search_knowledge_source(
-            bot_id=bot_id,
+            bot_id=agent_id,
             name=name,
             search_endpoint=endpoint,
             search_index=index,
@@ -1179,186 +1179,6 @@ knowledge_app.add_typer(azure_search_app, name="azure-ai-search")
 app.add_typer(knowledge_app, name="knowledge")
 
 
-# =============================================================================
-# Connection Commands
-# =============================================================================
-
-connection_app = typer.Typer(help="Manage Power Platform connections for Copilot Studio")
-
-
-@connection_app.command("create")
-def connection_create(
-    name: str = typer.Option(
-        ...,
-        "--name",
-        "-n",
-        help="Display name for the connection",
-    ),
-    endpoint: str = typer.Option(
-        ...,
-        "--endpoint",
-        "-e",
-        help="Azure AI Search endpoint URL (e.g., https://mysearch.search.windows.net)",
-    ),
-    api_key: str = typer.Option(
-        ...,
-        "--api-key",
-        "-k",
-        help="Azure AI Search API key (admin or query key)",
-    ),
-    environment: str = typer.Option(
-        ...,
-        "--environment",
-        "--env",
-        help="Power Platform environment ID (e.g., Default-<tenant-id>)",
-    ),
-):
-    """
-    Create a Power Platform connection for Azure AI Search.
-
-    This creates a connection that can be used by Copilot Studio agents to access
-    Azure AI Search indexes as knowledge sources. After creating the connection,
-    you must link it to your agent through the Copilot Studio UI.
-
-    To find your environment ID:
-    - Go to make.powerapps.com
-    - Select your environment
-    - The ID is in the URL or can be found via 'az rest' commands
-
-    Examples:
-        copilot connection create \\
-            --name "My Search Connection" \\
-            --endpoint https://mysearch.search.windows.net \\
-            --api-key <your-api-key> \\
-            --environment Default-<tenant-id>
-
-    After creation:
-    1. Open your agent in Copilot Studio
-    2. Go to Knowledge > Add knowledge
-    3. Select Azure AI Search
-    4. Select the connection you just created
-    5. Specify the index name
-    """
-    try:
-        client = get_client()
-        result = client.create_azure_ai_search_connection(
-            connection_name=name,
-            search_endpoint=endpoint,
-            api_key=api_key,
-            environment_id=environment,
-        )
-
-        connection_id = result.get("name", "")
-        display_name = result.get("properties", {}).get("displayName", name)
-        statuses = result.get("properties", {}).get("statuses", [])
-        status = statuses[0].get("status", "Unknown") if statuses else "Unknown"
-
-        print_success(f"Connection '{display_name}' created successfully.")
-        typer.echo(f"Connection ID: {connection_id}")
-        typer.echo(f"Status: {status}")
-        typer.echo("")
-        typer.echo("Next steps:")
-        typer.echo("  1. Open your agent in Copilot Studio")
-        typer.echo("  2. Go to Knowledge > Add knowledge")
-        typer.echo("  3. Select Azure AI Search")
-        typer.echo("  4. Select this connection and specify the index name")
-    except Exception as e:
-        exit_code = handle_api_error(e)
-        raise typer.Exit(exit_code)
-
-
-@connection_app.command("list")
-def connection_list(
-    environment: str = typer.Option(
-        ...,
-        "--environment",
-        "--env",
-        help="Power Platform environment ID (e.g., Default-<tenant-id>)",
-    ),
-    table: bool = typer.Option(
-        False,
-        "--table",
-        "-t",
-        help="Display output as a formatted table instead of JSON",
-    ),
-):
-    """
-    List Azure AI Search connections in a Power Platform environment.
-
-    Examples:
-        copilot connection list --environment Default-<tenant-id>
-        copilot connection list --env Default-<tenant-id> --table
-    """
-    try:
-        client = get_client()
-        connections = client.list_azure_ai_search_connections(environment)
-
-        if table:
-            # Format for table display
-            formatted = []
-            for conn in connections:
-                props = conn.get("properties", {})
-                statuses = props.get("statuses", [])
-                status = statuses[0].get("status", "Unknown") if statuses else "Unknown"
-                formatted.append({
-                    "Name": props.get("displayName", ""),
-                    "Connection ID": conn.get("name", ""),
-                    "Status": status,
-                    "Created": props.get("createdTime", "")[:10] if props.get("createdTime") else "",
-                })
-            print_table(
-                formatted,
-                columns=["Name", "Connection ID", "Status", "Created"],
-            )
-        else:
-            print_json(connections)
-    except Exception as e:
-        exit_code = handle_api_error(e)
-        raise typer.Exit(exit_code)
-
-
-@connection_app.command("delete")
-def connection_delete(
-    connection_id: str = typer.Argument(
-        ...,
-        help="The connection's unique identifier (GUID)",
-    ),
-    environment: str = typer.Option(
-        ...,
-        "--environment",
-        "--env",
-        help="Power Platform environment ID (e.g., Default-<tenant-id>)",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        "-f",
-        help="Skip confirmation prompt",
-    ),
-):
-    """
-    Delete a Power Platform connection.
-
-    Examples:
-        copilot connection delete <connection-id> --environment Default-<tenant-id>
-        copilot connection delete <connection-id> --env Default-<tenant-id> --force
-    """
-    if not force:
-        confirm = typer.confirm(f"Are you sure you want to delete connection {connection_id}?")
-        if not confirm:
-            raise typer.Abort()
-
-    try:
-        client = get_client()
-        client.delete_connection(connection_id, environment)
-        print_success(f"Connection {connection_id} deleted successfully.")
-    except Exception as e:
-        exit_code = handle_api_error(e)
-        raise typer.Exit(exit_code)
-
-
-# Register connection subgroup
-app.add_typer(connection_app, name="connection")
 
 
 # =============================================================================
@@ -1377,11 +1197,11 @@ def _is_guid(value: str) -> bool:
 
 @transcript_app.command("list")
 def transcript_list(
-    bot: Optional[str] = typer.Option(
+    agent: Optional[str] = typer.Option(
         None,
-        "--bot",
-        "-b",
-        help="Filter by bot name or ID",
+        "--agent",
+        "-a",
+        help="Filter by agent name or ID",
     ),
     limit: int = typer.Option(
         20,
@@ -1399,27 +1219,27 @@ def transcript_list(
     """
     List conversation transcripts.
 
-    Shows recent conversation transcripts, optionally filtered by bot name or ID.
+    Shows recent conversation transcripts, optionally filtered by agent name or ID.
 
     Examples:
         copilot agent transcript list
         copilot agent transcript list --table
-        copilot agent transcript list --bot "Writer Draft Reviewer" --limit 10
-        copilot agent transcript list --bot d2735b5c-aecb-f011-bbd3-000d3a8ba54e
+        copilot agent transcript list --agent "Writer Draft Reviewer" --limit 10
+        copilot agent transcript list --agent d2735b5c-aecb-f011-bbd3-000d3a8ba54e
     """
     try:
         client = get_client()
 
-        # Determine if bot is an ID or name
-        bot_id = None
-        bot_name = None
-        if bot:
-            if _is_guid(bot):
-                bot_id = bot
+        # Determine if agent is an ID or name
+        agent_id = None
+        agent_name = None
+        if agent:
+            if _is_guid(agent):
+                agent_id = agent
             else:
-                bot_name = bot
+                agent_name = agent
 
-        transcripts = client.list_transcripts(bot_id=bot_id, bot_name=bot_name, limit=limit)
+        transcripts = client.list_transcripts(bot_id=agent_id, bot_name=agent_name, limit=limit)
 
         if not transcripts:
             typer.echo("No transcripts found.")
@@ -1429,7 +1249,7 @@ def transcript_list(
             formatted = [format_transcript_for_display(t) for t in transcripts]
             print_table(
                 formatted,
-                columns=["id", "bot_name", "start_time"],
+                columns=["id", "agent_name", "start_time"],
                 headers=["ID", "Agent", "Start Time"],
             )
         else:
@@ -2382,7 +2202,7 @@ analytics_app = typer.Typer(help="Manage Application Insights telemetry for agen
 
 @analytics_app.command("get")
 def analytics_get(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
 ):
     """
     Get Application Insights configuration for an agent.
@@ -2395,13 +2215,13 @@ def analytics_get(
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        config = client.get_bot_app_insights(bot_id)
+        config = client.get_bot_app_insights(agent_id)
 
-        typer.echo(f"\nApplication Insights for '{bot_name}':\n")
+        typer.echo(f"\nApplication Insights for '{agent_name}':\n")
 
         if config["enabled"]:
             typer.echo(f"  Status:                   Enabled")
@@ -2423,7 +2243,7 @@ def analytics_get(
 
 @analytics_app.command("enable")
 def analytics_enable(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     connection_string: str = typer.Option(
         ...,
         "--connection-string",
@@ -2453,27 +2273,27 @@ def analytics_enable(
     resource under Settings > Properties or in the Overview section.
 
     Examples:
-        copilot agent analytics enable <bot-id> -c "InstrumentationKey=xxx;..."
-        copilot agent analytics enable <bot-id> -c "..." --log-activities
-        copilot agent analytics enable <bot-id> -c "..." --log-activities --log-sensitive
+        copilot agent analytics enable <agent-id> -c "InstrumentationKey=xxx;..."
+        copilot agent analytics enable <agent-id> -c "..." --log-activities
+        copilot agent analytics enable <agent-id> -c "..." --log-activities --log-sensitive
     """
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        typer.echo(f"Enabling Application Insights for '{bot_name}'...")
+        typer.echo(f"Enabling Application Insights for '{agent_name}'...")
 
         client.update_bot_app_insights(
-            bot_id=bot_id,
+            bot_id=agent_id,
             connection_string=connection_string,
             log_activities=log_activities,
             log_sensitive_properties=log_sensitive,
         )
 
-        print_success(f"Application Insights enabled for '{bot_name}'!")
+        print_success(f"Application Insights enabled for '{agent_name}'!")
         typer.echo("")
         typer.echo("Settings applied:")
         typer.echo(f"  Log Activities:           {log_activities}")
@@ -2489,7 +2309,7 @@ def analytics_enable(
 
 @analytics_app.command("disable")
 def analytics_disable(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     force: bool = typer.Option(
         False,
         "--force",
@@ -2503,29 +2323,29 @@ def analytics_disable(
     Removes the App Insights connection string and disables all logging.
 
     Examples:
-        copilot agent analytics disable <bot-id>
-        copilot agent analytics disable <bot-id> --force
+        copilot agent analytics disable <agent-id>
+        copilot agent analytics disable <agent-id> --force
     """
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
         if not force:
             confirm = typer.confirm(
-                f"Are you sure you want to disable Application Insights for '{bot_name}'?"
+                f"Are you sure you want to disable Application Insights for '{agent_name}'?"
             )
             if not confirm:
                 typer.echo("Operation cancelled.")
                 raise typer.Exit(0)
 
-        typer.echo(f"Disabling Application Insights for '{bot_name}'...")
+        typer.echo(f"Disabling Application Insights for '{agent_name}'...")
 
-        client.update_bot_app_insights(bot_id=bot_id, disable=True)
+        client.update_bot_app_insights(bot_id=agent_id, disable=True)
 
-        print_success(f"Application Insights disabled for '{bot_name}'.")
+        print_success(f"Application Insights disabled for '{agent_name}'.")
         typer.echo("")
         typer.echo("Note: You may need to republish the agent for changes to take effect.")
 
@@ -2536,7 +2356,7 @@ def analytics_disable(
 
 @analytics_app.command("update")
 def analytics_update(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     log_activities: Optional[bool] = typer.Option(
         None,
         "--log-activities/--no-log-activities",
@@ -2554,10 +2374,10 @@ def analytics_update(
     Use this to change logging settings without modifying the connection string.
 
     Examples:
-        copilot agent analytics update <bot-id> --log-activities
-        copilot agent analytics update <bot-id> --no-log-activities
-        copilot agent analytics update <bot-id> --log-sensitive
-        copilot agent analytics update <bot-id> --log-activities --log-sensitive
+        copilot agent analytics update <agent-id> --log-activities
+        copilot agent analytics update <agent-id> --no-log-activities
+        copilot agent analytics update <agent-id> --log-sensitive
+        copilot agent analytics update <agent-id> --log-activities --log-sensitive
     """
     if log_activities is None and log_sensitive is None:
         typer.echo("Error: Please specify at least one option to update.")
@@ -2567,19 +2387,19 @@ def analytics_update(
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        typer.echo(f"Updating Application Insights settings for '{bot_name}'...")
+        typer.echo(f"Updating Application Insights settings for '{agent_name}'...")
 
         client.update_bot_app_insights(
-            bot_id=bot_id,
+            bot_id=agent_id,
             log_activities=log_activities,
             log_sensitive_properties=log_sensitive,
         )
 
-        print_success(f"Application Insights settings updated for '{bot_name}'!")
+        print_success(f"Application Insights settings updated for '{agent_name}'!")
 
         # Show what was updated
         updates = []
@@ -2634,7 +2454,7 @@ def _convert_timespan(timespan: str) -> str:
 
 @analytics_app.command("query")
 def analytics_query(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     timespan: str = typer.Option(
         "24h",
         "--timespan",
@@ -2666,10 +2486,10 @@ def analytics_query(
     configured for this agent. Requires App Insights to be enabled.
 
     Examples:
-        copilot agent analytics query <bot-id>
-        copilot agent analytics query <bot-id> --timespan 7d
-        copilot agent analytics query <bot-id> --events --json
-        copilot agent analytics query <bot-id> -t 1h -l 50
+        copilot agent analytics query <agent-id>
+        copilot agent analytics query <agent-id> --timespan 7d
+        copilot agent analytics query <agent-id> --events --json
+        copilot agent analytics query <agent-id> -t 1h -l 50
     """
     try:
         # Convert timespan to ISO 8601
@@ -2681,17 +2501,17 @@ def analytics_query(
 
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        typer.echo(f"Querying Application Insights for '{bot_name}'...")
+        typer.echo(f"Querying Application Insights for '{agent_name}'...")
         typer.echo(f"Time range: {timespan}")
         typer.echo("")
 
         # Execute query
         result = client.get_bot_telemetry(
-            bot_id=bot_id,
+            bot_id=agent_id,
             timespan=iso_timespan,
             events_only=events_only,
         )
@@ -2788,7 +2608,7 @@ AUTH_MODE_NAMES = {
 
 @auth_app.command("get")
 def auth_get(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
 ):
     """
     Get authentication configuration for an agent.
@@ -2806,13 +2626,13 @@ def auth_get(
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        auth_config = client.get_bot_auth(bot_id)
+        auth_config = client.get_bot_auth(agent_id)
 
-        typer.echo(f"\nAuthentication for '{bot_name}':\n")
+        typer.echo(f"\nAuthentication for '{agent_name}':\n")
         typer.echo(f"  Mode:    {auth_config['mode']} ({auth_config['mode_name']})")
         typer.echo(f"  Trigger: {auth_config['trigger']} ({auth_config['trigger_name']})")
 
@@ -2828,7 +2648,7 @@ def auth_get(
 
 @auth_app.command("set")
 def auth_set(
-    bot_id: str = typer.Argument(..., help="The bot's unique identifier (GUID)"),
+    agent_id: str = typer.Argument(..., help="The agent's unique identifier (GUID)"),
     mode: Optional[int] = typer.Option(
         None,
         "--mode",
@@ -2854,9 +2674,9 @@ def auth_set(
       - 1 = Always (require authentication for all conversations)
 
     Examples:
-        copilot agent auth set <bot-id> --mode 1
-        copilot agent auth set <bot-id> --mode 1 --trigger 0
-        copilot agent auth set <bot-id> --trigger 0
+        copilot agent auth set <agent-id> --mode 1
+        copilot agent auth set <agent-id> --mode 1 --trigger 0
+        copilot agent auth set <agent-id> --trigger 0
     """
     try:
         if mode is None and trigger is None:
@@ -2873,9 +2693,9 @@ def auth_set(
 
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
         updates = []
         if mode is not None:
@@ -2884,11 +2704,11 @@ def auth_set(
             trigger_name = "As Needed" if trigger == 0 else "Always"
             updates.append(f"trigger to {trigger} ({trigger_name})")
 
-        typer.echo(f"Setting authentication for '{bot_name}': {', '.join(updates)}...")
+        typer.echo(f"Setting authentication for '{agent_name}': {', '.join(updates)}...")
 
-        client.update_bot_auth(bot_id=bot_id, mode=mode, trigger=trigger)
+        client.update_bot_auth(bot_id=agent_id, mode=mode, trigger=trigger)
 
-        print_success(f"Authentication updated for '{bot_name}'!")
+        print_success(f"Authentication updated for '{agent_name}'!")
         typer.echo("")
         typer.echo("Note: You may need to republish the agent for changes to take effect.")
 

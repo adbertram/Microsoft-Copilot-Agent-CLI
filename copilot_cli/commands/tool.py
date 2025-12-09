@@ -6,15 +6,14 @@ from ..client import get_client
 from ..output import print_json, print_table, print_success, handle_api_error
 
 # Import subcommand modules
-from . import prompt, restapi, connector, mcp
+from . import prompt, restapi, mcp
 
 
-app = typer.Typer(help="Manage tools available to Copilot Studio agents")
+app = typer.Typer(help="Manage agent tools (prompts, REST APIs, MCP servers)")
 
 # Register type-specific subcommands
 app.add_typer(prompt.app, name="prompt", help="Manage AI Builder prompts")
 app.add_typer(restapi.app, name="restapi", help="Manage REST API tools")
-app.add_typer(connector.app, name="connector", help="Manage connectors")
 app.add_typer(mcp.app, name="mcp", help="Manage MCP servers")
 
 
@@ -37,87 +36,18 @@ AIPLUGIN_SUBTYPE_LABELS = {
 }
 
 
-def extract_connector_operations(connector: dict) -> list[dict]:
-    """
-    Extract individual operations/tools from a connector's swagger definition.
-
-    Each operation (e.g., "Add Comment (V2)" in Asana) becomes a separate tool.
-    """
-    props = connector.get("properties", {})
-    swagger = props.get("swagger", {})
-    paths = swagger.get("paths", {})
-
-    connector_id = connector.get("name", "")
-    connector_name = props.get("displayName") or connector_id
-    publisher = props.get("publisher", "")
-
-    from .connector import is_custom_connector
-    is_custom = is_custom_connector(connector)
-
-    operations = []
-    for path, methods in paths.items():
-        if not isinstance(methods, dict):
-            continue
-        for method, operation in methods.items():
-            # Skip non-HTTP methods (like 'parameters')
-            if method.lower() not in ["get", "post", "put", "patch", "delete", "head", "options"]:
-                continue
-            if not isinstance(operation, dict):
-                continue
-
-            summary = operation.get("summary", "")
-            operation_id = operation.get("operationId", "")
-            description = operation.get("description", "")
-            visibility = operation.get("x-ms-visibility", "")
-
-            # Use summary as the tool name, fall back to operationId
-            tool_name = summary or operation_id or f"{method.upper()} {path}"
-
-            operations.append({
-                "name": tool_name,
-                "type": "Connector",
-                "subtype": connector_name,  # Show parent connector as subtype
-                "publisher": publisher,
-                "installed": is_custom,
-                "managed": not is_custom,
-                "id": operation_id,
-                "connector_id": connector_id,
-                "method": method.upper(),
-                "path": path,
-                "visibility": visibility or "normal",
-                "_component_type": None,
-            })
-
-    return operations
-
-
-def format_unified_tool(tool: dict, tool_type: str, subtype: Optional[str] = None) -> dict:
+def format_unified_tool(tool: dict, tool_type: str) -> dict:
     """Format a tool for unified display with installed and managed status."""
     if tool_type == "prompt":
         is_managed = tool.get("ismanaged", False)
         return {
             "name": tool.get("msdyn_name", ""),
             "type": "Prompt",
-            "subtype": "-",
             "publisher": tool.get("_ownerid_value@OData.Community.Display.V1.FormattedValue", ""),
             "installed": not is_managed,
             "managed": is_managed,
             "id": tool.get("msdyn_aimodelid", ""),
             "_component_type": "msdyn_aimodel",  # Entity name for dynamic lookup
-        }
-    elif tool_type == "connector":
-        props = tool.get("properties", {})
-        from .connector import is_custom_connector
-        is_custom = is_custom_connector(tool)
-        return {
-            "name": props.get("displayName") or tool.get("name", ""),
-            "type": "Custom Connector" if is_custom else "Connector",
-            "subtype": subtype or "-",
-            "publisher": props.get("publisher", ""),
-            "installed": is_custom,
-            "managed": not is_custom,
-            "id": tool.get("name", ""),
-            "_component_type": None,  # Power Apps connectors - no Dataverse dependency lookup
         }
     elif tool_type == "mcp":
         props = tool.get("properties", {})
@@ -125,12 +55,11 @@ def format_unified_tool(tool: dict, tool_type: str, subtype: Optional[str] = Non
         return {
             "name": props.get("displayName") or tool.get("name", ""),
             "type": "MCP",
-            "subtype": "-",
             "publisher": props.get("publisher", ""),
             "installed": is_custom,
             "managed": not is_custom,
             "id": tool.get("name", ""),
-            "_component_type": None,  # Power Apps connectors - no Dataverse dependency lookup
+            "_component_type": None,
         }
     return {}
 
@@ -141,7 +70,7 @@ def tool_list(
         None,
         "--type",
         "-T",
-        help="Filter by tool type: prompt, connector, mcp",
+        help="Filter by tool type: prompt, mcp",
     ),
     installed_only: bool = typer.Option(
         False,
@@ -161,37 +90,29 @@ def tool_list(
         "-t",
         help="Display output as a formatted table instead of JSON",
     ),
-    include_actions: bool = typer.Option(
-        False,
-        "--include-actions",
-        "-a",
-        help="For connectors, show individual operations/actions as tools (slower)",
-    ),
 ):
     """
-    List all tools available to add to Copilot Studio agents.
+    List agent tools available in your environment.
 
-    Shows the full catalog of available tools: prompts, connectors, and MCP servers.
+    Shows AI Builder prompts and MCP servers that can be added to Copilot Studio agents.
     The 'Installed' column shows which tools are configured in your environment.
 
     Tool Types:
       - prompt: AI Builder prompts for text analysis and generation
-      - connector: Power Platform connectors (use --include-actions to see operations)
       - mcp: Model Context Protocol servers
 
-    With --include-actions, connector operations (e.g., "Add Comment (V2)" in Asana)
-    are shown as individual tools. The 'Connector' column shows the parent connector.
+    Note: For connectors, use 'copilot connector list' instead.
 
     Examples:
-        copilot tool list --table                            # All tools (connectors as single items)
-        copilot tool list --installed --table                # Only installed tools
-        copilot tool list --type connector --table           # All connectors
-        copilot tool list --type connector --include-actions # Connector operations as tools
-        copilot tool list --filter "excel" --table           # Search by name
+        copilot tool list --table                # All tools
+        copilot tool list --installed --table    # Only installed tools
+        copilot tool list --type prompt --table  # AI Builder prompts only
+        copilot tool list --filter "excel"       # Search by name
     """
-    valid_types = ["prompt", "connector", "mcp"]
+    valid_types = ["prompt", "mcp"]
     if tool_type and tool_type.lower() not in valid_types:
         typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
+        typer.echo("Note: For connectors, use 'copilot connector list' instead.")
         raise typer.Exit(1)
 
     try:
@@ -201,20 +122,6 @@ def tool_list(
         # Determine which types to fetch
         types_to_fetch = [tool_type.lower()] if tool_type else valid_types
 
-        # Build a map of connector subtypes from AIPlugins (for custom connectors)
-        # Map by display name (humanname) for matching with Power Apps connectors
-        connector_subtypes_by_name = {}
-        try:
-            aiplugins = client.get("aiplugins?$select=_connector_value,pluginsubtype,humanname")
-            for plugin in aiplugins.get("value", []):
-                humanname = plugin.get("humanname", "")
-                subtype_code = plugin.get("pluginsubtype")
-                if humanname and subtype_code is not None:
-                    # Use lowercase name as key for case-insensitive matching
-                    connector_subtypes_by_name[humanname.lower()] = AIPLUGIN_SUBTYPE_LABELS.get(subtype_code, f"Type {subtype_code}")
-        except Exception:
-            pass  # Continue without subtypes if lookup fails
-
         # Fetch each tool type
         if "prompt" in types_to_fetch:
             prompts = client.list_prompts()
@@ -223,41 +130,7 @@ def tool_list(
                 if not installed_only or formatted["installed"]:
                     all_tools.append(formatted)
 
-        if "connector" in types_to_fetch:
-            # Get basic connector list first (fast)
-            connectors = client.list_connectors(include_actions=False)
-
-            # Pre-filter if needed before fetching swagger
-            if installed_only:
-                from .connector import is_custom_connector
-                connectors = [c for c in connectors if is_custom_connector(c)]
-
-            if include_actions:
-                count = len(connectors)
-                typer.confirm(
-                    f"Fetching actions for {count} connector(s). This may take a moment. Continue?",
-                    abort=True,
-                )
-                # Fetch swagger for filtered connectors only
-                for c in connectors:
-                    connector_id = c.get("name", "")
-                    try:
-                        detailed = client.get_connector(connector_id)
-                        operations = extract_connector_operations(detailed)
-                        all_tools.extend(operations)
-                    except Exception:
-                        pass  # Skip connectors we can't fetch
-            else:
-                # Show connectors as single items
-                for c in connectors:
-                    props = c.get("properties", {})
-                    display_name = props.get("displayName") or c.get("name", "")
-                    subtype = connector_subtypes_by_name.get(display_name.lower())
-                    formatted = format_unified_tool(c, "connector", subtype)
-                    all_tools.append(formatted)
-
         if "mcp" in types_to_fetch:
-            # Show ALL MCP servers from catalog
             mcps = client.list_mcp_servers()
             for m in mcps:
                 formatted = format_unified_tool(m, "mcp")
@@ -282,7 +155,6 @@ def tool_list(
             component_type = tool.get("_component_type")
             if tool.get("installed") and component_type is not None:
                 try:
-                    # Handle both integer component types and entity names
                     if isinstance(component_type, int):
                         deps = client.get_dependencies(tool["id"], component_type)
                     else:
@@ -295,21 +167,18 @@ def tool_list(
             # Remove internal field
             tool.pop("_component_type", None)
 
-        # Sort by type, then subtype (connector name for Connector type), then name
-        type_order = {"Prompt": 0, "Connector": 1, "Custom Connector": 2, "REST API": 3, "MCP": 4}
+        # Sort by type then name
+        type_order = {"Prompt": 0, "MCP": 1}
         all_tools.sort(key=lambda x: (
             type_order.get(x["type"], 99),
-            x.get("subtype", "").lower(),
             x["name"].lower()
         ))
 
         if table:
-            # Use "Connector" header when showing actions, "Subtype" otherwise
-            subtype_header = "Connector" if include_actions else "Subtype"
             print_table(
                 all_tools,
-                columns=["name", "type", "subtype", "publisher", "installed", "deps", "id"],
-                headers=["Name", "Type", subtype_header, "Publisher", "Installed", "Deps", "ID"],
+                columns=["name", "type", "publisher", "installed", "deps", "id"],
+                headers=["Name", "Type", "Publisher", "Installed", "Deps", "ID"],
             )
         else:
             print_json(all_tools)

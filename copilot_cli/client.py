@@ -3303,19 +3303,22 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
 
-    def delete_connection(self, connection_id: str, environment_id: str) -> None:
+    def delete_connection(
+        self, connection_id: str, connector_id: str, environment_id: str
+    ) -> None:
         """
         Delete a Power Platform connection.
 
         Args:
             connection_id: The connection's unique identifier (GUID)
+            connector_id: The connector's unique identifier (e.g., shared_asana, shared_office365)
             environment_id: Power Platform environment ID
         """
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
         url = (
             f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
-            f"shared_azureaisearch/connections/{connection_id}"
+            f"{connector_id}/connections/{connection_id}"
             f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
         )
 
@@ -3338,6 +3341,143 @@ schemaName: {schema_name}
             raise ClientError(f"Failed to delete connection: HTTP {e.response.status_code}: {error_detail}")
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
+
+    def create_connection(
+        self,
+        connector_id: str,
+        connection_name: str,
+        environment_id: str,
+        parameters: Optional[dict] = None,
+    ) -> dict:
+        """
+        Create a Power Platform connection for any connector.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_asana)
+            connection_name: Display name for the connection
+            environment_id: Power Platform environment ID
+            parameters: Connection parameters (connector-specific)
+
+        Returns:
+            Dict containing connection details
+
+        Raises:
+            ClientError: If connection creation fails
+        """
+        import uuid
+
+        connection_id = str(uuid.uuid4())
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        # Build the connection request
+        connection_data = {
+            "properties": {
+                "environment": {
+                    "id": f"/providers/Microsoft.PowerApps/environments/{environment_id}",
+                    "name": environment_id
+                },
+                "displayName": connection_name,
+            }
+        }
+
+        # Add parameters if provided
+        if parameters:
+            connection_data["properties"]["connectionParameters"] = parameters
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
+            f"{connector_id}/connections/{connection_id}"
+            f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.put(url, headers=headers, json=connection_data, timeout=60.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to create connection: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Connection request failed: {e}")
+
+    def create_oauth_connection(
+        self,
+        connector_id: str,
+        connection_name: str,
+        environment_id: str,
+    ) -> dict:
+        """
+        Create a Power Platform connection for an OAuth-based connector.
+
+        This creates the connection record but the user must complete the
+        OAuth consent flow via the returned URL or Power Platform portal.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_asana)
+            connection_name: Display name for the connection
+            environment_id: Power Platform environment ID
+
+        Returns:
+            Dict containing connection details and consent URL if available
+
+        Raises:
+            ClientError: If connection creation fails
+        """
+        import uuid
+
+        connection_id = str(uuid.uuid4())
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        # OAuth connections require minimal initial parameters
+        connection_data = {
+            "properties": {
+                "environment": {
+                    "id": f"/providers/Microsoft.PowerApps/environments/{environment_id}",
+                    "name": environment_id
+                },
+                "displayName": connection_name,
+            }
+        }
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
+            f"{connector_id}/connections/{connection_id}"
+            f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.put(url, headers=headers, json=connection_data, timeout=60.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to create connection: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Connection request failed: {e}")
 
     def close(self):
         """Close the HTTP client."""

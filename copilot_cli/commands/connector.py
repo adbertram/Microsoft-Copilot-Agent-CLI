@@ -3,7 +3,7 @@ import typer
 from typing import Optional
 
 from ..client import get_client
-from ..output import print_json, print_table, handle_api_error
+from ..output import print_json, print_table, print_success, handle_api_error
 
 
 app = typer.Typer(help="Manage Power Platform connectors")
@@ -376,10 +376,10 @@ def connections_auth_test(
       - Unauthenticated: Connection needs to be authenticated
 
     Examples:
-        copilot tool connector connections auth-test --connector-id shared_office365
-        copilot tool connector connections auth-test -c shared_commondataserviceforapps --table
-        copilot tool connector connections auth-test -c shared_podio --connection-id abc123
-        copilot tool connector connections auth-test -c shared_office365 --test-api
+        copilot connector connections auth-test --connector-id shared_office365
+        copilot connector connections auth-test -c shared_commondataserviceforapps --table
+        copilot connector connections auth-test -c shared_podio --connection-id abc123
+        copilot connector connections auth-test -c shared_office365 --test-api
     """
     try:
         client = get_client()
@@ -393,7 +393,7 @@ def connections_auth_test(
             typer.echo("\nThis could mean:")
             typer.echo("  - No connections have been created for this connector")
             typer.echo("  - The connector ID might be incorrect")
-            typer.echo("\nUse 'copilot tool connector list --table' to see available connectors.")
+            typer.echo("\nUse 'copilot connector list --table' to see available connectors.")
             return
 
         # If specific connection requested, filter to that one
@@ -486,6 +486,279 @@ def connections_auth_test(
         raise typer.Exit(exit_code)
 
 
+@connections_app.command("create")
+def connections_create(
+    connector_id: str = typer.Option(
+        ...,
+        "--connector-id",
+        "-c",
+        help="The connector's unique identifier (e.g., shared_asana, shared_office365)",
+    ),
+    name: str = typer.Option(
+        ...,
+        "--name",
+        "-n",
+        help="Display name for the connection",
+    ),
+    parameters: Optional[str] = typer.Option(
+        None,
+        "--parameters",
+        "-p",
+        help="JSON string of connection parameters (connector-specific). For OAuth connectors, use --oauth to initiate browser-based auth.",
+    ),
+    oauth: bool = typer.Option(
+        False,
+        "--oauth",
+        help="Initiate OAuth authentication flow (opens browser). Use for OAuth-based connectors like Asana, SharePoint, etc.",
+    ),
+    environment: Optional[str] = typer.Option(
+        None,
+        "--environment",
+        "--env",
+        help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
+    ),
+):
+    """
+    Create a new connection for a connector.
+
+    Connections authenticate access to external services. Different connectors
+    require different authentication methods:
+
+    OAuth Connectors (--oauth):
+      Use browser-based authentication for connectors like Asana, SharePoint,
+      Dynamics 365, etc. This will output a consent URL to complete in browser.
+
+    API Key Connectors (--parameters):
+      Provide credentials directly via JSON. For example:
+        --parameters '{"api_key": "xxx"}' for API key auth
+        --parameters '{"username": "x", "password": "y"}' for basic auth
+
+    Azure AI Search:
+      Use specific parameters for Azure AI Search connections:
+        --parameters '{"endpoint": "https://search.windows.net", "api_key": "xxx"}'
+
+    Examples:
+        # OAuth connector (Asana, SharePoint, etc.)
+        copilot connector connections create -c shared_asana -n "My Asana" --oauth
+
+        # Azure AI Search
+        copilot connector connections create -c shared_azureaisearch -n "My Search" \\
+            --parameters '{"endpoint": "https://mysearch.search.windows.net", "api_key": "xxx"}'
+
+        # API key connector
+        copilot connector connections create -c shared_sendgrid -n "SendGrid" \\
+            --parameters '{"api_key": "SG.xxx"}'
+    """
+    import json
+    import uuid
+
+    try:
+        client = get_client()
+
+        # Get environment ID from config if not provided
+        if not environment:
+            from ..config import get_config
+            config = get_config()
+            environment = config.environment_id
+            if not environment:
+                typer.echo(
+                    "Error: Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or use --environment.",
+                    err=True
+                )
+                raise typer.Exit(1)
+
+        # Parse parameters if provided
+        params_dict = {}
+        if parameters:
+            try:
+                params_dict = json.loads(parameters)
+            except json.JSONDecodeError as e:
+                typer.echo(f"Error: Invalid JSON in --parameters: {e}", err=True)
+                raise typer.Exit(1)
+
+        if oauth:
+            # OAuth flow - create connection and return consent URL
+            result = client.create_oauth_connection(
+                connector_id=connector_id,
+                connection_name=name,
+                environment_id=environment,
+            )
+
+            connection_id = result.get("name", "")
+            consent_url = result.get("properties", {}).get("connectionParameters", {}).get("token", {}).get("oAuthSettings", {}).get("consentUrl")
+
+            # Try to extract consent link from various locations
+            if not consent_url:
+                # Check for consent link in statuses
+                statuses = result.get("properties", {}).get("statuses", [])
+                for status in statuses:
+                    if status.get("status") == "Unauthenticated":
+                        error = status.get("error", {})
+                        if isinstance(error, dict):
+                            consent_url = error.get("message", "")
+                            # Extract URL if embedded in message
+                            if "https://" in consent_url:
+                                import re
+                                urls = re.findall(r'https://[^\s\'"]+', consent_url)
+                                if urls:
+                                    consent_url = urls[0]
+
+            print_success(f"Connection '{name}' created.")
+            typer.echo(f"Connection ID: {connection_id}")
+            typer.echo(f"Connector: {connector_id}")
+            typer.echo("")
+
+            if consent_url and consent_url.startswith("https://"):
+                typer.echo("OAuth authentication required. Complete the consent flow:")
+                typer.echo(f"\n  {consent_url}\n")
+                typer.echo("After completing authentication in your browser, the connection will be ready.")
+            else:
+                typer.echo("Note: Connection created but requires authentication.")
+                typer.echo("Complete the OAuth flow in Power Platform admin center:")
+                typer.echo(f"  https://make.powerapps.com/environments/{environment}/connections")
+
+        elif connector_id == "shared_azureaisearch":
+            # Azure AI Search has specific parameters
+            endpoint = params_dict.get("endpoint") or params_dict.get("ConnectionEndpoint")
+            api_key = params_dict.get("api_key") or params_dict.get("AdminKey")
+
+            if not endpoint or not api_key:
+                typer.echo(
+                    "Error: Azure AI Search requires 'endpoint' and 'api_key' in --parameters",
+                    err=True
+                )
+                typer.echo('Example: --parameters \'{"endpoint": "https://mysearch.search.windows.net", "api_key": "xxx"}\'')
+                raise typer.Exit(1)
+
+            result = client.create_azure_ai_search_connection(
+                connection_name=name,
+                search_endpoint=endpoint,
+                api_key=api_key,
+                environment_id=environment,
+            )
+
+            connection_id = result.get("name", "")
+            display_name = result.get("properties", {}).get("displayName", name)
+            statuses = result.get("properties", {}).get("statuses", [])
+            status = statuses[0].get("status", "Unknown") if statuses else "Unknown"
+
+            print_success(f"Connection '{display_name}' created successfully.")
+            typer.echo(f"Connection ID: {connection_id}")
+            typer.echo(f"Status: {status}")
+
+        else:
+            # Generic connection creation with parameters
+            result = client.create_connection(
+                connector_id=connector_id,
+                connection_name=name,
+                environment_id=environment,
+                parameters=params_dict,
+            )
+
+            connection_id = result.get("name", "")
+            props = result.get("properties", {})
+            display_name = props.get("displayName", name)
+            statuses = props.get("statuses", [])
+            status = statuses[0].get("status", "Unknown") if statuses else "Unknown"
+
+            print_success(f"Connection '{display_name}' created.")
+            typer.echo(f"Connection ID: {connection_id}")
+            typer.echo(f"Connector: {connector_id}")
+            typer.echo(f"Status: {status}")
+
+            if status == "Unauthenticated":
+                typer.echo("")
+                typer.echo("Note: Connection requires authentication.")
+                typer.echo("Complete setup in Power Platform:")
+                typer.echo(f"  https://make.powerapps.com/environments/{environment}/connections")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@connections_app.command("delete")
+def connections_delete(
+    connection_id: str = typer.Argument(
+        ...,
+        help="The connection's unique identifier (GUID)",
+    ),
+    connector_id: str = typer.Option(
+        ...,
+        "--connector-id",
+        "-c",
+        help="The connector's unique identifier (e.g., shared_asana, shared_office365)",
+    ),
+    environment: Optional[str] = typer.Option(
+        None,
+        "--environment",
+        "--env",
+        help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Delete a connector connection.
+
+    Permanently removes a connection from the Power Platform environment.
+    This may break flows or agents that depend on this connection.
+
+    Examples:
+        copilot connector connections delete <guid> -c shared_asana
+        copilot connector connections delete <guid> -c shared_office365 --force
+        copilot connector connections delete <guid> -c shared_azureaisearch --env Default-xxx
+    """
+    try:
+        client = get_client()
+
+        # Get environment ID from config if not provided
+        if not environment:
+            from ..config import get_config
+            config = get_config()
+            environment = config.environment_id
+            if not environment:
+                typer.echo(
+                    "Error: Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or use --environment.",
+                    err=True
+                )
+                raise typer.Exit(1)
+
+        # Try to get connection details first
+        try:
+            connections = client.list_connections(connector_id, environment)
+            conn = next((c for c in connections if c.get("name") == connection_id), None)
+            if conn:
+                display_name = conn.get("properties", {}).get("displayName", connection_id)
+                typer.echo(f"Connection: {display_name}")
+                typer.echo(f"ID: {connection_id}")
+                typer.echo(f"Connector: {connector_id}")
+        except Exception:
+            pass
+
+        if not force:
+            typer.echo("\nWARNING: This may break flows or agents using this connection.")
+            confirm = typer.confirm("Are you sure you want to delete this connection?")
+            if not confirm:
+                typer.echo("Cancelled.")
+                raise typer.Exit(0)
+
+        client.delete_connection(connection_id, connector_id, environment)
+        print_success(f"Connection {connection_id} deleted successfully.")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 @connections_app.command("remove")
 def connections_remove(
     connection_ref_id: str = typer.Argument(
@@ -506,12 +779,15 @@ def connections_remove(
     Connection references are solution-aware links between Power Platform
     solutions and connector connections.
 
+    Note: To delete an actual connection (not a reference), use:
+        copilot connector connections delete <id> -c <connector-id>
+
     WARNING: Removing a connection reference may break flows or agents that
     depend on it. Use with caution.
 
     Examples:
-        copilot tool connector connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e
-        copilot tool connector connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e --force
+        copilot connector connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e
+        copilot connector connections remove 3562bdae-3fbb-f011-bbd3-000d3a8ba54e --force
     """
     try:
         client = get_client()

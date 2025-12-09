@@ -33,7 +33,13 @@ except ImportError:
 
 try:
     from .commands import tool
-    app.add_typer(tool.app, name="tool", help="Manage tools (prompts, connectors, REST APIs, MCP)")
+    app.add_typer(tool.app, name="tool", help="Manage agent tools (prompts, REST APIs, MCP)")
+except ImportError:
+    pass
+
+try:
+    from .commands import connector
+    app.add_typer(connector.app, name="connector", help="Manage Power Platform connectors and connections")
 except ImportError:
     pass
 
@@ -69,7 +75,7 @@ def callback(
     Examples:
         copilot agent list
         copilot agent list --table
-        copilot agent get <bot_id>
+        copilot agent get <agent_id>
     """
     if version:
         typer.echo("copilot-cli version 0.1.0")

@@ -11,8 +11,8 @@ The Copilot CLI provides access to:
 - **Knowledge** - Add file-based and Azure AI Search knowledge sources
 - **Analytics** - Query Application Insights telemetry for troubleshooting
 - **Transcripts** - View conversation history for debugging
-- **Connections** - Manage Power Platform connections
-- **Tools** - Unified tool management (prompts, connectors, REST APIs, MCP servers)
+- **Connectors** - Manage Power Platform connectors and connections
+- **Tools** - Manage agent tools (prompts, REST APIs, MCP servers)
 - **Solutions** - Manage solutions, publishers, and solution components
 - **Flows** - List and view Power Automate cloud flows
 - **Environments** - List and view Power Platform environments
@@ -53,8 +53,8 @@ copilot agent list -t                   # Short form
 ### Get Agent Details
 
 ```bash
-copilot agent get <bot-id>              # Get agent details
-copilot agent get <bot-id> --components # Include all components (topics, tools, knowledge)
+copilot agent get <agent-id>              # Get agent details
+copilot agent get <agent-id> --components # Include all components (topics, tools, knowledge)
 ```
 
 ### Create Agent
@@ -79,11 +79,11 @@ copilot agent create --name "My Agent" --no-orchestration
 ### Update Agent
 
 ```bash
-copilot agent update <bot-id> --name "New Name"
-copilot agent update <bot-id> --description "New description"
-copilot agent update <bot-id> --instructions "New system prompt"
-copilot agent update <bot-id> --instructions-file ./prompt.txt
-copilot agent update <bot-id> --no-orchestration
+copilot agent update <agent-id> --name "New Name"
+copilot agent update <agent-id> --description "New description"
+copilot agent update <agent-id> --instructions "New system prompt"
+copilot agent update <agent-id> --instructions-file ./prompt.txt
+copilot agent update <agent-id> --no-orchestration
 ```
 
 **Options:**
@@ -98,7 +98,7 @@ copilot agent update <bot-id> --no-orchestration
 ### Publish Agent
 
 ```bash
-copilot agent publish <bot-id>          # Make latest changes live
+copilot agent publish <agent-id>          # Make latest changes live
 ```
 
 **Note:** Changes to agents are not live until published.
@@ -106,8 +106,8 @@ copilot agent publish <bot-id>          # Make latest changes live
 ### Delete Agent
 
 ```bash
-copilot agent remove <bot-id>           # Delete (with confirmation)
-copilot agent remove <bot-id> --force   # Delete without confirmation
+copilot agent remove <agent-id>           # Delete (with confirmation)
+copilot agent remove <agent-id> --force   # Delete without confirmation
 ```
 
 ### Test Agent (Send Prompt)
@@ -116,22 +116,22 @@ Send a message to an agent and get a response. Requires Direct Line secret or En
 
 ```bash
 # Using Direct Line secret
-copilot agent prompt <bot-id> --message "Hello" --secret "your-secret"
+copilot agent prompt <agent-id> --message "Hello" --secret "your-secret"
 
 # Using environment variable
 export DIRECTLINE_SECRET=your-secret
-copilot agent prompt <bot-id> -m "Hello"
+copilot agent prompt <agent-id> -m "Hello"
 
 # Using Entra ID authentication
-copilot agent prompt <bot-id> -m "Hello" --entra-id \
+copilot agent prompt <agent-id> -m "Hello" --entra-id \
     --client-id <app-client-id> --tenant-id <tenant-id> \
     --token-endpoint "https://{ENV}.environment.api.powerplatform.com/..."
 
 # With file attachment
-copilot agent prompt <bot-id> -m "Review this document" --file ./draft.docx --secret "xxx"
+copilot agent prompt <agent-id> -m "Review this document" --file ./draft.docx --secret "xxx"
 
 # Verbose output with JSON response
-copilot agent prompt <bot-id> -m "Hello" -s "xxx" --verbose --json
+copilot agent prompt <agent-id> -m "Hello" -s "xxx" --verbose --json
 ```
 
 **Options:**
@@ -395,24 +395,24 @@ copilot agent tool remove <component-id> --force   # Remove without confirmation
 ### List Knowledge Sources
 
 ```bash
-copilot agent knowledge list --bot <bot-id>
-copilot agent knowledge list --bot <bot-id> --table
+copilot agent knowledge list --agent <agent-id>
+copilot agent knowledge list --agent <agent-id> --table
 ```
 
 ### Add File-Based Knowledge
 
 ```bash
 # From inline content
-copilot agent knowledge file add --bot <bot-id> --name "FAQ" --content "Q: What? A: Test."
+copilot agent knowledge file add --agent <agent-id> --name "FAQ" --content "Q: What? A: Test."
 
 # From file
-copilot agent knowledge file add --bot <bot-id> --name "Guide" --file ./document.md
+copilot agent knowledge file add --agent <agent-id> --name "Guide" --file ./document.md
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `-b, --bot` | Bot's unique identifier (required) |
+| `-a, --agent` | Agent's unique identifier (required) |
 | `-n, --name` | Display name for knowledge source (required) |
 | `-c, --content` | Text content |
 | `-f, --file` | Path to file containing content |
@@ -421,7 +421,7 @@ copilot agent knowledge file add --bot <bot-id> --name "Guide" --file ./document
 ### Add Azure AI Search Knowledge (Experimental)
 
 ```bash
-copilot agent knowledge azure-ai-search add --bot <bot-id> \
+copilot agent knowledge azure-ai-search add --agent <agent-id> \
     --name "Product Docs" \
     --endpoint https://mysearch.search.windows.net \
     --index products-index \
@@ -431,39 +431,40 @@ copilot agent knowledge azure-ai-search add --bot <bot-id> \
 ### Remove Knowledge Source
 
 ```bash
-copilot agent knowledge remove --bot <bot-id> <component-id>
-copilot agent knowledge remove --bot <bot-id> <component-id> --force
+copilot agent knowledge remove --agent <agent-id> <component-id>
+copilot agent knowledge remove --agent <agent-id> <component-id> --force
 ```
 
 ---
 
-## Tool Commands (Unified Tool Management)
+## Tool Commands
 
-The `copilot tool` command provides unified management of all tool types available to Copilot Studio agents.
+The `copilot tool` command manages agent tools (AI Builder prompts, REST APIs, MCP servers) that can be added to Copilot Studio agents.
 
-### List All Tools
+Note: For connectors, use `copilot connector` instead.
+
+### List Tools
 
 ```bash
 copilot tool list                              # List all tools (JSON)
 copilot tool list --table                      # Formatted table
 copilot tool list --installed --table          # Only installed tools
-copilot tool list --type prompt --table        # Filter by type
-copilot tool list --type connector --table     # Filter by type
+copilot tool list --type prompt --table        # AI Builder prompts only
+copilot tool list --type mcp --table           # MCP servers only
 copilot tool list --filter "excel" --table     # Search by name
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `-T, --type` | Filter by type: `prompt`, `connector`, `mcp` |
+| `-T, --type` | Filter by type: `prompt`, `mcp` |
 | `-i, --installed` | Show only tools installed in your environment |
 | `-f, --filter` | Filter by name (case-insensitive) |
 | `-t, --table` | Display as formatted table |
 
 **Output Columns:**
 - **Name** - Tool display name
-- **Type** - Tool type (Prompt, Connector, Custom Connector, MCP)
-- **Subtype** - For custom connectors: Rest Api, Custom Connector, Flow, Dataverse
+- **Type** - Tool type (Prompt, MCP)
 - **Publisher** - Tool publisher
 - **Installed** - Whether the tool is installed in your environment
 - **Deps** - Number of dependent components (for installed tools)
@@ -523,73 +524,6 @@ copilot tool prompt update <prompt-id> --file prompt.txt --no-publish
 
 ---
 
-### Connector Commands
-
-List and view Power Platform connectors.
-
-```bash
-# List connectors
-copilot tool connector list                     # All connectors (JSON)
-copilot tool connector list --table             # Formatted table
-copilot tool connector list --custom --table    # Custom connectors only
-copilot tool connector list --managed --table   # Managed (Microsoft) connectors only
-copilot tool connector list --filter "office365"
-
-# Get connector details
-copilot tool connector get <connector-id>
-```
-
-**List Options:**
-| Option | Description |
-|--------|-------------|
-| `-c, --custom` | Show only custom connectors |
-| `-m, --managed` | Show only managed (Microsoft) connectors |
-| `-f, --filter` | Filter by name or publisher |
-| `-t, --table` | Display as formatted table |
-
----
-
-### Connector Connections Commands
-
-Manage and test connections (authenticated instances) for connectors.
-
-```bash
-# List connections for a connector
-copilot tool connector connections list --connector-id shared_office365
-copilot tool connector connections list -c shared_commondataserviceforapps --table
-copilot tool connector connections list -c shared_podio --connection-id abc123
-
-# Test connection authentication
-copilot tool connector connections auth-test --connector-id shared_office365
-copilot tool connector connections auth-test -c shared_commondataserviceforapps --table
-copilot tool connector connections auth-test -c shared_podio --connection-id abc123
-copilot tool connector connections auth-test -c shared_office365 --test-api
-```
-
-**List Options:**
-| Option | Description |
-|--------|-------------|
-| `-c, --connector-id` | **(Required)** The connector ID (e.g., shared_office365) |
-| `--connection-id` | Filter to a specific connection ID |
-| `-t, --table` | Display as formatted table |
-
-**Auth-Test Options:**
-| Option | Description |
-|--------|-------------|
-| `-c, --connector-id` | **(Required)** The connector ID |
-| `--connection-id` | Test a specific connection ID (tests all if not provided) |
-| `-t, --table` | Display as formatted table |
-| `--test-api` | Also call the testConnection API endpoint (not all connectors support this) |
-
-**Connection Statuses:**
-| Status | Description |
-|--------|-------------|
-| `Connected` | Connection is authenticated and ready to use |
-| `Error` | Connection has an authentication or configuration issue |
-| `Unauthenticated` | Connection needs to be authenticated |
-
----
-
 ### REST API Commands
 
 List and view REST API tools (custom connectors defined with OpenAPI specs).
@@ -618,6 +552,145 @@ copilot tool mcp list --table                   # Formatted table
 # Get MCP server details
 copilot tool mcp get <server-id>
 ```
+
+---
+
+## Connector Commands
+
+Manage Power Platform connectors and connections. Connectors are the integration points to external services, and connections are authenticated instances of those connectors.
+
+### List Connectors
+
+```bash
+copilot connector list                          # All connectors (JSON)
+copilot connector list --table                  # Formatted table
+copilot connector list --custom --table         # Custom connectors only
+copilot connector list --managed --table        # Managed (Microsoft) connectors only
+copilot connector list --filter "office365"     # Filter by name
+```
+
+**List Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --custom` | Show only custom connectors |
+| `-m, --managed` | Show only managed (Microsoft) connectors |
+| `-f, --filter` | Filter by name or publisher |
+| `-t, --table` | Display as formatted table |
+
+### Get Connector Details
+
+```bash
+copilot connector get <connector-id>
+copilot connector get shared_office365
+copilot connector get shared_asana
+```
+
+### Connection Commands
+
+Manage connections (authenticated instances) for connectors. Connections authenticate access to external services like Asana, SharePoint, Azure AI Search, etc.
+
+#### List Connections
+
+```bash
+# List all connection references in environment
+copilot connector connections list --table
+
+# List connections for a specific connector
+copilot connector connections list --connector-id shared_office365
+copilot connector connections list -c shared_commondataserviceforapps --table
+copilot connector connections list -c shared_podio --connection-id abc123
+```
+
+**List Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | The connector ID (e.g., shared_office365). If omitted, lists all connection references. |
+| `--connection-id` | Filter to a specific connection ID |
+| `-t, --table` | Display as formatted table |
+
+#### Create Connection
+
+Create a new connection for a connector. Different connectors require different authentication methods.
+
+```bash
+# OAuth connector (Asana, SharePoint, Dynamics 365, etc.)
+# Creates connection and outputs consent URL for browser-based auth
+copilot connector connections create -c shared_asana -n "My Asana" --oauth
+
+# Azure AI Search (API key authentication)
+copilot connector connections create -c shared_azureaisearch -n "My Search" \
+    --parameters '{"endpoint": "https://mysearch.search.windows.net", "api_key": "xxx"}'
+
+# API key connector (SendGrid, etc.)
+copilot connector connections create -c shared_sendgrid -n "SendGrid" \
+    --parameters '{"api_key": "SG.xxx"}'
+
+# Generic connector with parameters
+copilot connector connections create -c shared_sql -n "SQL Server" \
+    --parameters '{"server": "myserver.database.windows.net", "database": "mydb"}'
+```
+
+**Create Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID (e.g., shared_asana, shared_office365) |
+| `-n, --name` | **(Required)** Display name for the connection |
+| `-p, --parameters` | JSON string of connection parameters (connector-specific) |
+| `--oauth` | Initiate OAuth flow - creates connection and outputs consent URL |
+| `--environment, --env` | Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified. |
+
+**Authentication Methods:**
+- **OAuth** (`--oauth`): For connectors like Asana, SharePoint, Dynamics 365. Creates connection and provides URL to complete browser-based authentication.
+- **API Key** (`--parameters`): For connectors with API key auth. Provide credentials in JSON format.
+- **Azure AI Search**: Special handling for `{"endpoint": "...", "api_key": "..."}` parameters.
+
+#### Delete Connection
+
+```bash
+copilot connector connections delete <connection-id> -c shared_asana
+copilot connector connections delete <connection-id> -c shared_office365 --force
+copilot connector connections delete <connection-id> -c shared_azureaisearch --env Default-xxx
+```
+
+**Delete Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID |
+| `--environment, --env` | Power Platform environment ID |
+| `-f, --force` | Skip confirmation prompt |
+
+#### Test Connection Authentication
+
+```bash
+copilot connector connections auth-test --connector-id shared_office365
+copilot connector connections auth-test -c shared_commondataserviceforapps --table
+copilot connector connections auth-test -c shared_podio --connection-id abc123
+copilot connector connections auth-test -c shared_office365 --test-api
+```
+
+**Auth-Test Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --connector-id` | **(Required)** The connector ID |
+| `--connection-id` | Test a specific connection ID (tests all if not provided) |
+| `-t, --table` | Display as formatted table |
+| `--test-api` | Also call the testConnection API endpoint (not all connectors support this) |
+
+#### Remove Connection Reference
+
+Remove a connection reference (solution-aware link) from Dataverse. This is different from deleting a connection.
+
+```bash
+copilot connector connections remove <connection-ref-id>
+copilot connector connections remove <connection-ref-id> --force
+```
+
+**Connection Statuses:**
+| Status | Description |
+|--------|-------------|
+| `Connected` | Connection is authenticated and ready to use |
+| `Error` | Connection has an authentication or configuration issue |
+| `Unauthenticated` | Connection needs to be authenticated (complete OAuth flow or check credentials) |
 
 ---
 
@@ -671,23 +744,23 @@ copilot solution delete <solution-id>
 ### Add Agent to Solution
 
 ```bash
-copilot solution add-agent --solution MySolution --bot <bot-id>
-copilot solution add-agent -s MySolution -b <bot-id> --no-connection
-copilot solution add-agent -s MySolution -b <bot-id> --no-required
+copilot solution add-agent --solution MySolution --agent <agent-id>
+copilot solution add-agent -s MySolution -a <agent-id> --no-connection
+copilot solution add-agent -s MySolution -a <agent-id> --no-required
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
 | `-s, --solution` | Solution's unique name (required) |
-| `-b, --bot` | Bot's unique identifier (required) |
+| `-a, --agent` | Agent's unique identifier (required) |
 | `--no-connection` | Don't add bot's connection reference |
 | `--no-required` | Don't add required dependent components |
 
 ### Remove Agent from Solution
 
 ```bash
-copilot solution remove-agent --solution MySolution --bot <bot-id>
+copilot solution remove-agent --solution MySolution --agent <agent-id>
 ```
 
 ### Add/Remove Connection Reference
@@ -808,31 +881,31 @@ Query Application Insights telemetry for troubleshooting agent behavior.
 ### Get Analytics Configuration
 
 ```bash
-copilot agent analytics get <bot-id>
+copilot agent analytics get <agent-id>
 ```
 
 ### Enable/Disable Analytics
 
 ```bash
-copilot agent analytics enable <bot-id>
-copilot agent analytics disable <bot-id>
+copilot agent analytics enable <agent-id>
+copilot agent analytics disable <agent-id>
 ```
 
 ### Update Logging Options
 
 ```bash
-copilot agent analytics update <bot-id>
+copilot agent analytics update <agent-id>
 ```
 
 ### Query Telemetry
 
 ```bash
-copilot agent analytics query <bot-id>                    # Last 24 hours
-copilot agent analytics query <bot-id> --timespan 7d      # Last 7 days
-copilot agent analytics query <bot-id> -t 1h              # Last hour
-copilot agent analytics query <bot-id> --events           # Custom events only (faster)
-copilot agent analytics query <bot-id> -t 1h -l 50        # Limit to 50 rows
-copilot agent analytics query <bot-id> --json             # Raw JSON output
+copilot agent analytics query <agent-id>                    # Last 24 hours
+copilot agent analytics query <agent-id> --timespan 7d      # Last 7 days
+copilot agent analytics query <agent-id> -t 1h              # Last hour
+copilot agent analytics query <agent-id> --events           # Custom events only (faster)
+copilot agent analytics query <agent-id> -t 1h -l 50        # Limit to 50 rows
+copilot agent analytics query <agent-id> --json             # Raw JSON output
 ```
 
 **Options:**
@@ -854,15 +927,15 @@ View conversation transcripts for debugging and troubleshooting.
 ```bash
 copilot agent transcript list                             # List recent transcripts
 copilot agent transcript list --table                     # Formatted table
-copilot agent transcript list --bot "Agent Name"          # Filter by bot name
-copilot agent transcript list --bot <bot-id>              # Filter by bot ID
+copilot agent transcript list --agent "Agent Name"          # Filter by agent name
+copilot agent transcript list --agent <agent-id>              # Filter by bot ID
 copilot agent transcript list --limit 10                  # Limit results
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `-b, --bot` | Filter by bot name or ID |
+| `-a, --agent` | Filter by agent name or ID |
 | `-l, --limit` | Maximum transcripts to return (default: 20) |
 | `-t, --table` | Display as formatted table |
 
@@ -870,35 +943,6 @@ copilot agent transcript list --limit 10                  # Limit results
 
 ```bash
 copilot agent transcript get <transcript-id>
-```
-
----
-
-## Connection Commands
-
-Manage Power Platform connections for Copilot Studio integrations.
-
-### List Connections
-
-```bash
-copilot agent connection list --environment Default-<tenant-id>
-copilot agent connection list --environment Default-<tenant-id> --table
-```
-
-### Create Connection
-
-```bash
-copilot agent connection create \
-    --name "My Search Connection" \
-    --endpoint https://mysearch.search.windows.net \
-    --api-key <api-key> \
-    --environment Default-<tenant-id>
-```
-
-### Delete Connection
-
-```bash
-copilot agent connection delete <connection-id> --environment Default-<tenant-id>
 ```
 
 ---
@@ -986,12 +1030,12 @@ echo $DATAVERSE_URL
 ```
 
 **Agent Not Responding:**
-1. Check if agent is published: `copilot agent get <bot-id>`
-2. Check analytics for errors: `copilot agent analytics query <bot-id> -t 1h`
-3. Review recent transcripts: `copilot agent transcript list --bot <bot-id>`
+1. Check if agent is published: `copilot agent get <agent-id>`
+2. Check analytics for errors: `copilot agent analytics query <agent-id> -t 1h`
+3. Review recent transcripts: `copilot agent transcript list --agent <agent-id>`
 
 **Topic Not Triggering:**
-1. Ensure topic is enabled: `copilot agent topic list --agentId <bot-id> --table`
+1. Ensure topic is enabled: `copilot agent topic list --agentId <agent-id> --table`
 2. Check trigger phrases match user input
 3. Verify topic YAML syntax: `copilot agent topic get <topic-id> --yaml`
 
@@ -1004,23 +1048,23 @@ echo $DATAVERSE_URL
 
 1. **Check agent status:**
    ```bash
-   copilot agent get <bot-id>
+   copilot agent get <agent-id>
    ```
 
 2. **Query recent telemetry:**
    ```bash
-   copilot agent analytics query <bot-id> -t 1h --events
+   copilot agent analytics query <agent-id> -t 1h --events
    ```
 
 3. **Review conversation transcripts:**
    ```bash
-   copilot agent transcript list --bot <bot-id> --limit 5 --table
+   copilot agent transcript list --agent <agent-id> --limit 5 --table
    copilot agent transcript get <transcript-id>
    ```
 
 4. **Verify topic configuration:**
    ```bash
-   copilot agent topic list --agentId <bot-id> --table
+   copilot agent topic list --agentId <agent-id> --table
    copilot agent topic get <topic-id> --yaml
    ```
 
