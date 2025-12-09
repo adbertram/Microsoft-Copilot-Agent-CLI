@@ -1617,6 +1617,14 @@ action:
         if ':' not in tool_id:
             raise ClientError("Connector tool --id must be in format 'connector_id:operation_id' (e.g., 'shared_asana:GetTask')")
 
+        # Connection reference is required for connector tools
+        if not connection_ref:
+            raise ClientError(
+                "Connector tools require --connection-ref parameter.\n"
+                "Use 'copilot tool connector connections list --connector-id <connector>' to find existing connection references,\n"
+                "or create a connection in Power Platform and use its connection reference ID."
+            )
+
         connector_id, operation_id = tool_id.split(':', 1)
 
         # Use operation_id as name if not provided
