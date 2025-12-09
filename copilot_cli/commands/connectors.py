@@ -148,28 +148,182 @@ def connectors_list(
         raise typer.Exit(exit_code)
 
 
+def extract_operations(
+    connector: dict,
+    include_deprecated: bool = False,
+    include_internal: bool = False,
+) -> list:
+    """
+    Extract operations (actions/triggers) from connector swagger definition.
+
+    Args:
+        connector: The connector definition with swagger
+        include_deprecated: If True, include deprecated operations
+        include_internal: If True, include internal-visibility operations
+                         (internal ops cannot be used as Copilot agent tools)
+
+    Returns:
+        List of operation dicts with id, name, description, type, deprecated, visibility
+    """
+    operations = []
+    swagger = connector.get("properties", {}).get("swagger", {})
+    paths = swagger.get("paths", {})
+
+    for path, methods in paths.items():
+        for method, details in methods.items():
+            if method in ["get", "post", "put", "patch", "delete"]:
+                op_id = details.get("operationId")
+                if not op_id:
+                    continue
+
+                is_deprecated = details.get("deprecated", False)
+                visibility = details.get("x-ms-visibility", "normal")
+                is_internal = visibility == "internal"
+
+                # Skip deprecated unless explicitly requested
+                if is_deprecated and not include_deprecated:
+                    continue
+
+                # Skip internal unless explicitly requested
+                # Internal operations cannot be used as Copilot agent tools
+                if is_internal and not include_internal:
+                    continue
+
+                # Determine if trigger or action
+                is_trigger = details.get("x-ms-trigger") is not None
+                op_type = "Trigger" if is_trigger else "Action"
+
+                # Get description, truncate if too long
+                description = details.get("description") or details.get("summary") or ""
+                if len(description) > 80:
+                    description = description[:77] + "..."
+
+                operations.append({
+                    "id": op_id,
+                    "name": details.get("summary") or op_id,
+                    "type": op_type,
+                    "method": method.upper(),
+                    "deprecated": is_deprecated,
+                    "visibility": visibility,
+                    "description": description,
+                })
+
+    # Sort: Actions first, then Triggers, then by name
+    operations.sort(key=lambda x: (0 if x["type"] == "Action" else 1, x["id"].lower()))
+
+    return operations
+
+
 @app.command("get")
 def connectors_get(
     connector_id: str = typer.Argument(
         ...,
         help="The connector's unique identifier (e.g., shared_asana, shared_office365)",
     ),
+    table: bool = typer.Option(
+        False,
+        "--table",
+        "-t",
+        help="Display operations as a formatted table",
+    ),
+    include_deprecated: bool = typer.Option(
+        False,
+        "--include-deprecated",
+        "-d",
+        help="Include deprecated operations (hidden by default)",
+    ),
+    include_internal: bool = typer.Option(
+        False,
+        "--include-internal",
+        "-i",
+        help="Include internal operations (cannot be used as agent tools)",
+    ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        "-r",
+        help="Output raw JSON connector definition (ignores --table)",
+    ),
 ):
     """
-    Get details for a specific connector.
+    Get details for a specific connector including available operations.
 
-    Returns the full connector definition including available actions,
-    triggers, and connection parameters.
+    By default, shows only operations that can be used as Copilot agent tools.
+    Deprecated and internal-visibility operations are hidden by default.
 
     Examples:
-        copilot connectors get shared_asana
-        copilot connectors get shared_office365
-        copilot connectors get shared_sharepointonline
+        copilot connectors get shared_asana --table
+        copilot connectors get shared_asana --table --include-deprecated
+        copilot connectors get shared_asana --table --include-internal
+        copilot connectors get shared_office365 --raw
     """
     try:
         client = get_client()
         connector = client.get_connector(connector_id)
-        print_json(connector)
+
+        # Raw output - full JSON
+        if raw:
+            print_json(connector)
+            return
+
+        # Extract and display operations
+        operations = extract_operations(connector, include_deprecated, include_internal)
+        props = connector.get("properties", {})
+
+        # Show connector summary
+        typer.echo(f"\nConnector: {props.get('displayName', connector_id)}")
+        typer.echo(f"ID: {connector.get('name', connector_id)}")
+        typer.echo(f"Publisher: {props.get('publisher', 'N/A')}")
+
+        if not operations:
+            typer.echo("\nNo usable operations found.")
+            typer.echo("Use --include-deprecated and/or --include-internal to see hidden operations.")
+            return
+
+        # Count hidden operations
+        all_ops = extract_operations(connector, True, True)
+        deprecated_count = len([o for o in all_ops if o["deprecated"]])
+        internal_count = len([o for o in all_ops if o["visibility"] == "internal"])
+
+        hidden_parts = []
+        if deprecated_count > 0 and not include_deprecated:
+            hidden_parts.append(f"{deprecated_count} deprecated")
+        if internal_count > 0 and not include_internal:
+            hidden_parts.append(f"{internal_count} internal")
+
+        hidden_msg = f" ({', '.join(hidden_parts)} hidden)" if hidden_parts else ""
+        typer.echo(f"\nOperations: {len(operations)}{hidden_msg}")
+
+        if table:
+            # Table format
+            display_ops = []
+            for op in operations:
+                row = {
+                    "id": op["id"],
+                    "name": op["name"][:40] + "..." if len(op["name"]) > 40 else op["name"],
+                    "type": op["type"],
+                    "method": op["method"],
+                }
+                if include_deprecated:
+                    row["deprecated"] = "Yes" if op["deprecated"] else "No"
+                if include_internal:
+                    row["visibility"] = op["visibility"]
+                display_ops.append(row)
+
+            columns = ["id", "name", "type", "method"]
+            headers = ["Operation ID", "Name", "Type", "Method"]
+            if include_deprecated:
+                columns.append("deprecated")
+                headers.append("Deprecated")
+            if include_internal:
+                columns.append("visibility")
+                headers.append("Visibility")
+
+            print_table(display_ops, columns=columns, headers=headers)
+        else:
+            # JSON format - just operations list
+            print_json(operations)
+
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
