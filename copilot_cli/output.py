@@ -120,17 +120,17 @@ def handle_api_error(error: Exception) -> int:
 
 def format_bot_for_display(bot: dict) -> dict:
     """
-    Format a bot record for display.
+    Format an agent record for display.
 
     Args:
-        bot: Raw bot record from Dataverse
+        bot: Raw agent record from Dataverse
 
     Returns:
-        Simplified bot record for display
+        Simplified agent record for display
     """
     return {
         "name": bot.get("name", ""),
-        "botid": bot.get("botid", ""),
+        "botid": bot.get("botid", ""),  # Keep API field name for compatibility
         "schemaname": bot.get("schemaname", ""),
         "statecode": bot.get("statecode@OData.Community.Display.V1.FormattedValue", bot.get("statecode", "")),
         "statuscode": bot.get("statuscode@OData.Community.Display.V1.FormattedValue", bot.get("statuscode", "")),
@@ -211,7 +211,7 @@ def format_transcript_content(content: str) -> str:
         if sender_role == 1 or sender_role == "user":
             display_sender = "User"
         elif sender_role == 0 or sender_role == "bot":
-            display_sender = "Bot"
+            display_sender = "Agent"
         else:
             display_sender = str(sender_role) if sender_role else "Unknown"
 
@@ -257,8 +257,8 @@ def format_transcript_for_display(transcript: dict) -> dict:
     Returns:
         Simplified transcript record for display
     """
-    # Get bot name from OData formatted value annotation, fall back to ID
-    bot_name = transcript.get(
+    # Get agent name from OData formatted value annotation, fall back to ID
+    agent_name = transcript.get(
         "_bot_conversationtranscriptid_value@OData.Community.Display.V1.FormattedValue",
         transcript.get("_bot_conversationtranscriptid_value", ""),
     )
@@ -271,8 +271,8 @@ def format_transcript_for_display(transcript: dict) -> dict:
     return {
         "id": transcript.get("conversationtranscriptid", ""),
         "name": transcript.get("name", ""),
-        "bot_name": bot_name,
-        "bot_id": transcript.get("_bot_conversationtranscriptid_value", ""),
+        "agent_name": agent_name,
+        "agent_id": transcript.get("_bot_conversationtranscriptid_value", ""),
         "start_time": start_time,
         "schema_type": transcript.get("schematype", ""),
     }

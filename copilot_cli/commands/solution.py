@@ -216,16 +216,16 @@ def add_agent_to_solution(
         "-s",
         help="The solution's unique name",
     ),
-    bot_id: str = typer.Option(
+    agent_id: str = typer.Option(
         ...,
-        "--bot",
-        "-b",
-        help="The bot's unique identifier (GUID)",
+        "--agent",
+        "-a",
+        help="The agent's unique identifier (GUID)",
     ),
     include_connection: bool = typer.Option(
         True,
         "--include-connection/--no-connection",
-        help="Also add the bot's connection reference to the solution (default: True)",
+        help="Also add the agent's connection reference to the solution (default: True)",
     ),
     add_required: bool = typer.Option(
         True,
@@ -236,28 +236,28 @@ def add_agent_to_solution(
     """
     Add a Copilot agent (and optionally its connection reference) to a solution.
 
-    This command adds the specified bot to an unmanaged solution. By default,
-    it also adds the bot's connection reference for knowledge sources.
+    This command adds the specified agent to an unmanaged solution. By default,
+    it also adds the agent's connection reference for knowledge sources.
 
     Examples:
-        copilot solution add-agent --solution MySolution --bot <bot-id>
-        copilot solution add-agent -s MySolution -b <bot-id> --no-connection
-        copilot solution add-agent -s MySolution -b <bot-id> --no-required
+        copilot solution add-agent --solution MySolution --agent <agent-id>
+        copilot solution add-agent -s MySolution -a <agent-id> --no-connection
+        copilot solution add-agent -s MySolution -a <agent-id> --no-required
     """
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
-        # Add the bot to the solution
+        # Add the agent to the solution
         client.add_bot_to_solution(
             solution_unique_name=solution,
-            bot_id=bot_id,
+            bot_id=agent_id,
             add_required_components=add_required,
         )
-        print_success(f"Agent '{bot_name}' added to solution '{solution}'.")
+        print_success(f"Agent '{agent_name}' added to solution '{solution}'.")
 
         # Optionally add connection reference
         if include_connection:
@@ -278,7 +278,7 @@ def add_agent_to_solution(
                     else:
                         typer.echo(f"Warning: Could not add connection reference: {conn_error}", err=True)
             else:
-                typer.echo("Note: Bot has no connection reference configured.", err=True)
+                typer.echo("Note: Agent has no connection reference configured.", err=True)
 
     except Exception as e:
         exit_code = handle_api_error(e)
@@ -293,11 +293,11 @@ def remove_agent_from_solution(
         "-s",
         help="The solution's unique name",
     ),
-    bot_id: str = typer.Option(
+    agent_id: str = typer.Option(
         ...,
-        "--bot",
-        "-b",
-        help="The bot's unique identifier (GUID)",
+        "--agent",
+        "-a",
+        help="The agent's unique identifier (GUID)",
     ),
     force: bool = typer.Option(
         False,
@@ -309,22 +309,22 @@ def remove_agent_from_solution(
     """
     Remove a Copilot agent from a solution.
 
-    This removes the bot from the solution but does NOT delete the bot itself.
+    This removes the agent from the solution but does NOT delete the agent itself.
 
     Examples:
-        copilot solution remove-agent --solution MySolution --bot <bot-id>
-        copilot solution remove-agent -s MySolution -b <bot-id> --force
+        copilot solution remove-agent --solution MySolution --agent <agent-id>
+        copilot solution remove-agent -s MySolution -a <agent-id> --force
     """
     try:
         client = get_client()
 
-        # Get bot name for display
-        bot = client.get_bot(bot_id)
-        bot_name = bot.get("name", bot_id)
+        # Get agent name for display
+        bot = client.get_bot(agent_id)
+        agent_name = bot.get("name", agent_id)
 
         if not force:
             confirm = typer.confirm(
-                f"Remove agent '{bot_name}' from solution '{solution}'?"
+                f"Remove agent '{agent_name}' from solution '{solution}'?"
             )
             if not confirm:
                 typer.echo("Aborted.")
@@ -332,9 +332,9 @@ def remove_agent_from_solution(
 
         client.remove_bot_from_solution(
             solution_unique_name=solution,
-            bot_id=bot_id,
+            bot_id=agent_id,
         )
-        print_success(f"Agent '{bot_name}' removed from solution '{solution}'.")
+        print_success(f"Agent '{agent_name}' removed from solution '{solution}'.")
 
     except Exception as e:
         exit_code = handle_api_error(e)
@@ -627,11 +627,11 @@ connection_app = typer.Typer(help="Manage connection references")
 
 @connection_app.command("list")
 def list_connections(
-    bot_id: Optional[str] = typer.Option(
+    agent_id: Optional[str] = typer.Option(
         None,
-        "--bot",
-        "-b",
-        help="Filter to show only the connection reference for a specific bot",
+        "--agent",
+        "-a",
+        help="Filter to show only the connection reference for a specific agent",
     ),
     table: bool = typer.Option(
         False,
@@ -646,11 +646,11 @@ def list_connections(
     Examples:
         copilot solution connection list
         copilot solution connection list --table
-        copilot solution connection list --bot <bot-id>
+        copilot solution connection list --agent <agent-id>
     """
     try:
         client = get_client()
-        connections = client.list_connection_references(bot_id=bot_id)
+        connections = client.list_connection_references(bot_id=agent_id)
 
         if not connections:
             typer.echo("No connection references found.")

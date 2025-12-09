@@ -1,6 +1,6 @@
 # Copilot Studio Topic YAML Schema Reference
 
-This document provides a comprehensive reference for the YAML schema used to define topics in Microsoft Copilot Studio. Topics are stored as `botcomponent` records with `componenttype` 0 (legacy) or 9 (V2).
+This document provides a comprehensive reference for the YAML schema used to define topics in Microsoft Copilot Studio. Topics are stored as `botcomponent` records (agent components) with `componenttype` 0 (legacy) or 9 (V2).
 
 ## Table of Contents
 
@@ -466,7 +466,7 @@ Loop through a collection.
 | Prefix | Scope | Description |
 |--------|-------|-------------|
 | `Topic.` | Topic | Available within current topic only |
-| `Global.` | Bot | Available across all topics |
+| `Global.` | Agent | Available across all topics |
 | `System.` | System | Built-in system variables (read-only) |
 
 ### Variable Initialization
@@ -485,8 +485,8 @@ variable: Topic.ExistingVar    # Reference existing variable
 | `System.User.Id` | User's unique ID |
 | `System.User.DisplayName` | User's display name |
 | `System.Conversation.Id` | Conversation ID |
-| `System.Bot.Id` | Bot/Agent ID |
-| `System.Bot.Name` | Bot/Agent name |
+| `System.Bot.Id` | Agent ID |
+| `System.Bot.Name` | Agent name |
 | `System.Channel.Id` | Channel (webchat, teams, etc.) |
 | `System.LastMessage.Text` | Previous message text |
 | `System.AuthToken` | Authentication token (if authenticated) |
