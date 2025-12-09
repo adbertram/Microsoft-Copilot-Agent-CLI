@@ -2310,6 +2310,65 @@ def tool_remove(
         raise typer.Exit(exit_code)
 
 
+@tool_app.command("update")
+def tool_update(
+    component_id: str = typer.Argument(
+        ...,
+        help="The tool component's unique identifier (GUID)",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="New display name for the tool",
+    ),
+    description: Optional[str] = typer.Option(
+        None,
+        "--description",
+        "-d",
+        help="New description for the tool (used by AI for orchestration, max 1024 chars)",
+    ),
+):
+    """
+    Update a tool's attributes.
+
+    The description field is especially important as it's used by the AI agent
+    to determine when to use this tool. Make it descriptive and explicit about
+    when the tool should be used.
+
+    Examples:
+        copilot agent tool update <component-id> --name "New Tool Name"
+        copilot agent tool update <component-id> --description "Use this tool when..."
+        copilot agent tool update <component-id> -n "Name" -d "Description"
+    """
+    if not name and not description:
+        typer.echo("Error: At least one of --name or --description must be provided.", err=True)
+        raise typer.Exit(1)
+
+    # Validate description length
+    if description and len(description) > 1024:
+        typer.echo(f"Error: Description exceeds 1024 character limit ({len(description)} chars).", err=True)
+        raise typer.Exit(1)
+
+    try:
+        client = get_client()
+        result = client.update_tool(
+            component_id=component_id,
+            name=name,
+            description=description,
+        )
+        print_success(f"Tool updated successfully!")
+        typer.echo(f"Name: {result.get('name', 'N/A')}")
+        if result.get('description'):
+            desc = result['description']
+            if len(desc) > 100:
+                desc = desc[:100] + "..."
+            typer.echo(f"Description: {desc}")
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 # Register tool subgroup
 app.add_typer(tool_app, name="tool")
 

@@ -1447,6 +1447,60 @@ outputType: {{}}"""
         """
         self.delete(f"botcomponents({component_id})")
 
+    def update_tool(
+        self,
+        component_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> dict:
+        """
+        Update a tool's attributes.
+
+        Args:
+            component_id: The tool component's unique identifier
+            name: New display name for the tool
+            description: New description for the tool (used by AI for orchestration)
+
+        Returns:
+            The updated component data
+        """
+        # Get current component data
+        component = self.get(f"botcomponents({component_id})")
+
+        updates = {}
+        yaml_updates = {}
+
+        if name is not None:
+            updates["name"] = name
+
+        if description is not None:
+            updates["description"] = description
+            # Also update modelDescription in the YAML data
+            if component.get("data"):
+                # Use regex to replace modelDescription in YAML
+                # This avoids needing a yaml dependency
+                data = component["data"]
+                # Match modelDescription: followed by the value (until next line with key or end)
+                pattern = r'(modelDescription:)\s*[^\n]*'
+                # Escape any special chars in description for YAML
+                escaped_desc = description.replace('\\', '\\\\').replace('"', '\\"')
+                replacement = f'\\1 {escaped_desc}'
+                new_data = re.sub(pattern, replacement, data)
+                if new_data != data:
+                    updates["data"] = new_data
+
+        if not updates:
+            return component
+
+        # PATCH the component
+        url = f"{self.api_url}/botcomponents({component_id})"
+        headers = self._get_headers()
+        response = self._http_client.patch(url, headers=headers, json=updates, timeout=60.0)
+        response.raise_for_status()
+
+        # Return updated component
+        return self.get(f"botcomponents({component_id})")
+
     def add_tool(
         self,
         bot_id: str,
