@@ -18,6 +18,12 @@ app.add_typer(connector.app, name="connector", help="Manage connectors")
 app.add_typer(mcp.app, name="mcp", help="Manage MCP servers")
 
 
+# Solution component types for dependency lookup
+# See: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/solutioncomponent
+COMPONENT_TYPE_CONNECTOR = 372  # Custom Connector (connectors table)
+COMPONENT_TYPE_AI_MODEL = None  # Will be looked up dynamically for msdyn_aimodel
+
+
 def format_unified_tool(tool: dict, tool_type: str) -> dict:
     """Format a tool for unified display with installed and managed status."""
     if tool_type == "prompt":
@@ -29,6 +35,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
             "installed": not is_managed,
             "managed": is_managed,
             "id": tool.get("msdyn_aimodelid", ""),
+            "_component_type": "msdyn_aimodel",  # Entity name for dynamic lookup
         }
     elif tool_type == "restapi":
         # REST APIs are always custom/installed
@@ -39,6 +46,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
             "installed": True,
             "managed": False,
             "id": tool.get("connectorid", ""),
+            "_component_type": COMPONENT_TYPE_CONNECTOR,  # Hardcoded - entity lookup doesn't work
         }
     elif tool_type == "connector":
         props = tool.get("properties", {})
@@ -51,6 +59,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
             "installed": is_custom,
             "managed": not is_custom,
             "id": tool.get("name", ""),
+            "_component_type": None,  # Power Apps connectors - no Dataverse dependency lookup
         }
     elif tool_type == "mcp":
         props = tool.get("properties", {})
@@ -62,6 +71,7 @@ def format_unified_tool(tool: dict, tool_type: str) -> dict:
             "installed": is_custom,
             "managed": not is_custom,
             "id": tool.get("name", ""),
+            "_component_type": None,  # Power Apps connectors - no Dataverse dependency lookup
         }
     return {}
 
@@ -172,6 +182,24 @@ def tool_list(
             typer.echo("No tools match the filter criteria.")
             return
 
+        # Fetch dependencies for installed tools (only those with component type)
+        for tool in all_tools:
+            component_type = tool.get("_component_type")
+            if tool.get("installed") and component_type is not None:
+                try:
+                    # Handle both integer component types and entity names
+                    if isinstance(component_type, int):
+                        deps = client.get_dependencies(tool["id"], component_type)
+                    else:
+                        deps = client.get_dependencies_for_entity(tool["id"], component_type)
+                    tool["deps"] = len(deps)
+                except Exception:
+                    tool["deps"] = "-"
+            else:
+                tool["deps"] = "-"
+            # Remove internal field
+            tool.pop("_component_type", None)
+
         # Sort by type then name
         type_order = {"Prompt": 0, "Connector": 1, "Custom Connector": 2, "REST API": 3, "MCP": 4}
         all_tools.sort(key=lambda x: (type_order.get(x["type"], 99), x["name"].lower()))
@@ -179,8 +207,8 @@ def tool_list(
         if table:
             print_table(
                 all_tools,
-                columns=["name", "type", "publisher", "installed", "managed", "id"],
-                headers=["Name", "Type", "Publisher", "Installed", "Managed", "ID"],
+                columns=["name", "type", "publisher", "installed", "deps", "id"],
+                headers=["Name", "Type", "Publisher", "Installed", "Deps", "ID"],
             )
         else:
             print_json(all_tools)
@@ -287,12 +315,46 @@ def tool_remove(
             )
 
         # Delete the tool
-        if detected_type == "prompt":
-            client.delete_prompt(tool_id)
-        elif detected_type == "restapi":
-            client.delete_rest_api(tool_id)
-
-        print_success(f"Deleted {type_display} '{tool_name}'")
+        # Use component type for REST APIs (372), entity name for prompts
+        component_type = COMPONENT_TYPE_CONNECTOR if detected_type == "restapi" else "msdyn_aimodel"
+        try:
+            if detected_type == "prompt":
+                client.delete_prompt(tool_id)
+            elif detected_type == "restapi":
+                client.delete_rest_api(tool_id)
+            print_success(f"Deleted {type_display} '{tool_name}'")
+        except Exception as delete_error:
+            error_msg = str(delete_error)
+            # Check if it's a dependency error
+            if "referenced by" in error_msg.lower() or "cannot be deleted" in error_msg.lower():
+                typer.echo(f"Error: Cannot delete {type_display} '{tool_name}' - it has dependencies.\n", err=True)
+                # Fetch and display dependencies
+                try:
+                    if isinstance(component_type, int):
+                        deps = client.get_dependencies(tool_id, component_type)
+                    else:
+                        deps = client.get_dependencies_for_entity(tool_id, component_type)
+                    if deps:
+                        typer.echo("Dependent components:", err=True)
+                        for dep in deps:
+                            dep_type_code = dep.get("dependentcomponenttype")
+                            dep_type = dep.get("dependentcomponenttype@OData.Community.Display.V1.FormattedValue")
+                            dep_id = dep.get("dependentcomponentobjectid", "")
+                            # If formatted value is None, look up the component type name
+                            if not dep_type or dep_type == "None":
+                                try:
+                                    type_info = client.get(f"solutioncomponentdefinitions?$filter=solutioncomponenttype eq {dep_type_code}&$select=name")
+                                    type_defs = type_info.get("value", [])
+                                    dep_type = type_defs[0].get("name") if type_defs else f"Type {dep_type_code}"
+                                except Exception:
+                                    dep_type = f"Type {dep_type_code}"
+                            typer.echo(f"  - {dep_type}: {dep_id}", err=True)
+                        typer.echo("\nRemove this tool from these components before deleting.", err=True)
+                except Exception:
+                    pass  # If dependency lookup fails, just show original error
+                raise typer.Exit(1)
+            else:
+                raise delete_error
 
     except typer.Abort:
         typer.echo("Aborted.")

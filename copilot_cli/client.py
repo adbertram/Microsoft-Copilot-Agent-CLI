@@ -2151,6 +2151,38 @@ outputType: {{}}"""
             return definitions[0].get("solutioncomponenttype")
         return None
 
+    def get_dependencies(self, object_id: str, component_type: int) -> list[dict]:
+        """
+        Get dependencies that would prevent a component from being deleted.
+
+        Args:
+            object_id: The GUID of the component
+            component_type: The solution component type integer
+
+        Returns:
+            List of dependency records with dependent component info
+        """
+        result = self.get(
+            f"RetrieveDependenciesForDelete(ObjectId={object_id},ComponentType={component_type})"
+        )
+        return result.get("value", [])
+
+    def get_dependencies_for_entity(self, object_id: str, entity_name: str) -> list[dict]:
+        """
+        Get dependencies for a component, resolving entity name to component type.
+
+        Args:
+            object_id: The GUID of the component
+            entity_name: The logical name of the entity (e.g., 'connector', 'msdyn_aimodel')
+
+        Returns:
+            List of dependency records, or empty list if component type not found
+        """
+        component_type = self.get_solution_component_type(entity_name)
+        if component_type is None:
+            return []
+        return self.get_dependencies(object_id, component_type)
+
     def add_solution_component(
         self,
         solution_unique_name: str,
