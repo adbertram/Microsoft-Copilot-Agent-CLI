@@ -1702,6 +1702,19 @@ outputType: {{}}"""
         """
         return self.get(f"msdyn_aimodels({prompt_id})")
 
+    def delete_prompt(self, prompt_id: str) -> None:
+        """
+        Delete an AI Builder prompt by ID.
+
+        Args:
+            prompt_id: The prompt's unique identifier (GUID)
+
+        Note:
+            Managed (system) prompts cannot be deleted.
+            Only custom prompts can be deleted.
+        """
+        self.delete(f"msdyn_aimodels({prompt_id})")
+
     def get_prompt_configuration(self, prompt_id: str, active_only: bool = True) -> dict:
         """
         Get the AI Configuration for a prompt, including the prompt text.
@@ -1928,6 +1941,15 @@ outputType: {{}}"""
             Connector record
         """
         return self.get(f"connectors({connector_id})")
+
+    def delete_rest_api(self, connector_id: str) -> None:
+        """
+        Delete a REST API tool (custom connector) by ID.
+
+        Args:
+            connector_id: The connector's unique identifier (GUID)
+        """
+        self.delete(f"connectors({connector_id})")
 
     # =========================================================================
     # MCP Server Methods (Model Context Protocol)
