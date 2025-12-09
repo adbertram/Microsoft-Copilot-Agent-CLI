@@ -37,6 +37,60 @@ AIPLUGIN_SUBTYPE_LABELS = {
 }
 
 
+def extract_connector_operations(connector: dict) -> list[dict]:
+    """
+    Extract individual operations/tools from a connector's swagger definition.
+
+    Each operation (e.g., "Add Comment (V2)" in Asana) becomes a separate tool.
+    """
+    props = connector.get("properties", {})
+    swagger = props.get("swagger", {})
+    paths = swagger.get("paths", {})
+
+    connector_id = connector.get("name", "")
+    connector_name = props.get("displayName") or connector_id
+    publisher = props.get("publisher", "")
+
+    from .connector import is_custom_connector
+    is_custom = is_custom_connector(connector)
+
+    operations = []
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
+        for method, operation in methods.items():
+            # Skip non-HTTP methods (like 'parameters')
+            if method.lower() not in ["get", "post", "put", "patch", "delete", "head", "options"]:
+                continue
+            if not isinstance(operation, dict):
+                continue
+
+            summary = operation.get("summary", "")
+            operation_id = operation.get("operationId", "")
+            description = operation.get("description", "")
+            visibility = operation.get("x-ms-visibility", "")
+
+            # Use summary as the tool name, fall back to operationId
+            tool_name = summary or operation_id or f"{method.upper()} {path}"
+
+            operations.append({
+                "name": tool_name,
+                "type": "Connector",
+                "subtype": connector_name,  # Show parent connector as subtype
+                "publisher": publisher,
+                "installed": is_custom,
+                "managed": not is_custom,
+                "id": operation_id,
+                "connector_id": connector_id,
+                "method": method.upper(),
+                "path": path,
+                "visibility": visibility or "normal",
+                "_component_type": None,
+            })
+
+    return operations
+
+
 def format_unified_tool(tool: dict, tool_type: str, subtype: Optional[str] = None) -> dict:
     """Format a tool for unified display with installed and managed status."""
     if tool_type == "prompt":
@@ -107,6 +161,12 @@ def tool_list(
         "-t",
         help="Display output as a formatted table instead of JSON",
     ),
+    include_actions: bool = typer.Option(
+        False,
+        "--include-actions",
+        "-a",
+        help="For connectors, show individual operations/actions as tools (slower)",
+    ),
 ):
     """
     List all tools available to add to Copilot Studio agents.
@@ -116,20 +176,18 @@ def tool_list(
 
     Tool Types:
       - prompt: AI Builder prompts for text analysis and generation
-      - connector: Power Platform connectors (custom and managed)
+      - connector: Power Platform connectors (use --include-actions to see operations)
       - mcp: Model Context Protocol servers
 
-    Custom Connector Subtypes (shown for installed custom connectors):
-      - Rest Api: OpenAPI/Swagger-based connectors
-      - Custom Connector: General custom connectors
-      - Flow: Flow-based connectors
-      - Dataverse: Dataverse connectors
+    With --include-actions, connector operations (e.g., "Add Comment (V2)" in Asana)
+    are shown as individual tools. The 'Connector' column shows the parent connector.
 
     Examples:
-        copilot tool list --table                  # All available tools
-        copilot tool list --installed --table      # Only installed tools
-        copilot tool list --type connector --table # All connectors
-        copilot tool list --filter "excel" --table # Search by name
+        copilot tool list --table                            # All tools (connectors as single items)
+        copilot tool list --installed --table                # Only installed tools
+        copilot tool list --type connector --table           # All connectors
+        copilot tool list --type connector --include-actions # Connector operations as tools
+        copilot tool list --filter "excel" --table           # Search by name
     """
     valid_types = ["prompt", "connector", "mcp"]
     if tool_type and tool_type.lower() not in valid_types:
@@ -166,16 +224,36 @@ def tool_list(
                     all_tools.append(formatted)
 
         if "connector" in types_to_fetch:
-            # Show ALL connectors from catalog
-            connectors = client.list_connectors()
-            for c in connectors:
-                # Look up subtype for custom connectors by display name
-                props = c.get("properties", {})
-                display_name = props.get("displayName") or c.get("name", "")
-                # Match by display name (case-insensitive)
-                subtype = connector_subtypes_by_name.get(display_name.lower())
-                formatted = format_unified_tool(c, "connector", subtype)
-                if not installed_only or formatted["installed"]:
+            # Get basic connector list first (fast)
+            connectors = client.list_connectors(include_actions=False)
+
+            # Pre-filter if needed before fetching swagger
+            if installed_only:
+                from .connector import is_custom_connector
+                connectors = [c for c in connectors if is_custom_connector(c)]
+
+            if include_actions:
+                count = len(connectors)
+                typer.confirm(
+                    f"Fetching actions for {count} connector(s). This may take a moment. Continue?",
+                    abort=True,
+                )
+                # Fetch swagger for filtered connectors only
+                for c in connectors:
+                    connector_id = c.get("name", "")
+                    try:
+                        detailed = client.get_connector(connector_id)
+                        operations = extract_connector_operations(detailed)
+                        all_tools.extend(operations)
+                    except Exception:
+                        pass  # Skip connectors we can't fetch
+            else:
+                # Show connectors as single items
+                for c in connectors:
+                    props = c.get("properties", {})
+                    display_name = props.get("displayName") or c.get("name", "")
+                    subtype = connector_subtypes_by_name.get(display_name.lower())
+                    formatted = format_unified_tool(c, "connector", subtype)
                     all_tools.append(formatted)
 
         if "mcp" in types_to_fetch:
@@ -217,19 +295,28 @@ def tool_list(
             # Remove internal field
             tool.pop("_component_type", None)
 
-        # Sort by type then name
+        # Sort by type, then subtype (connector name for Connector type), then name
         type_order = {"Prompt": 0, "Connector": 1, "Custom Connector": 2, "REST API": 3, "MCP": 4}
-        all_tools.sort(key=lambda x: (type_order.get(x["type"], 99), x["name"].lower()))
+        all_tools.sort(key=lambda x: (
+            type_order.get(x["type"], 99),
+            x.get("subtype", "").lower(),
+            x["name"].lower()
+        ))
 
         if table:
+            # Use "Connector" header when showing actions, "Subtype" otherwise
+            subtype_header = "Connector" if include_actions else "Subtype"
             print_table(
                 all_tools,
                 columns=["name", "type", "subtype", "publisher", "installed", "deps", "id"],
-                headers=["Name", "Type", "Subtype", "Publisher", "Installed", "Deps", "ID"],
+                headers=["Name", "Type", subtype_header, "Publisher", "Installed", "Deps", "ID"],
             )
         else:
             print_json(all_tools)
 
+    except typer.Abort:
+        typer.echo("Aborted.")
+        raise typer.Exit(0)
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)

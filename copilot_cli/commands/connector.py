@@ -12,7 +12,6 @@ app = typer.Typer(help="Manage Power Platform connectors")
 connections_app = typer.Typer(help="Manage connector connections")
 app.add_typer(connections_app, name="connections")
 
-
 def is_custom_connector(connector: dict) -> bool:
     """
     Determine if a connector is custom or managed.

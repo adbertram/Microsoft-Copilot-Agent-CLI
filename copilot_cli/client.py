@@ -1513,13 +1513,20 @@ outputType: {{}}"""
     # Connector Methods
     # =========================================================================
 
-    def list_connectors(self, environment_id: Optional[str] = None) -> list[dict]:
+    def list_connectors(
+        self,
+        environment_id: Optional[str] = None,
+        include_actions: bool = False,
+    ) -> list[dict]:
         """
         List all available connectors (both custom and managed) in the environment.
 
         Args:
             environment_id: Power Platform environment ID. If not provided,
                             will use DATAVERSE_ENVIRONMENT_ID from config.
+            include_actions: If True, fetch full connector details including
+                            swagger/actions for each connector. This is slower
+                            but provides operation details.
 
         Returns:
             List of connector records from Power Apps API
@@ -1557,7 +1564,23 @@ outputType: {{}}"""
             response = self._http_client.get(url, headers=headers, timeout=60.0)
             response.raise_for_status()
             data = response.json()
-            return data.get("value", [])
+            connectors = data.get("value", [])
+
+            # If include_actions, fetch full details for each connector
+            if include_actions:
+                detailed_connectors = []
+                for conn in connectors:
+                    connector_id = conn.get("name", "")
+                    if connector_id:
+                        try:
+                            detailed = self.get_connector(connector_id, environment_id)
+                            detailed_connectors.append(detailed)
+                        except Exception:
+                            # If we can't get details, use the basic info
+                            detailed_connectors.append(conn)
+                return detailed_connectors
+
+            return connectors
         except httpx.HTTPStatusError as e:
             error_detail = ""
             try:
