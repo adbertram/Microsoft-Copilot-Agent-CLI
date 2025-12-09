@@ -345,3 +345,138 @@ def tool_remove(
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
+
+
+@app.command("update")
+def tool_update(
+    tool_id: str = typer.Argument(
+        ...,
+        help="The tool's unique identifier (connection reference ID for connectors)",
+    ),
+    tool_type: Optional[str] = typer.Option(
+        None,
+        "--type",
+        "-T",
+        help="Tool type: connector. Required if auto-detection fails.",
+    ),
+    connection_id: Optional[str] = typer.Option(
+        None,
+        "--connection-id",
+        "-c",
+        help="New connection ID to associate with this tool (for connector tools)",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="New display name for the tool",
+    ),
+    table: bool = typer.Option(
+        False,
+        "--table",
+        "-t",
+        help="Display output as a formatted table instead of JSON",
+    ),
+):
+    """
+    Update an existing tool's configuration.
+
+    Currently supports updating connection references for connector-based tools.
+    This allows you to change which connection (authenticated instance) a tool uses.
+
+    Supported tool types:
+      - connector: Connection references used by connector-based tools
+
+    Examples:
+        # Update the connection used by a connection reference
+        copilot tool update <connection-ref-id> --connection-id <new-connection-id>
+
+        # Update with explicit type
+        copilot tool update <id> --type connector --connection-id <conn-id>
+
+        # Update display name
+        copilot tool update <id> --name "My Asana Connection"
+
+        # Update both connection and name
+        copilot tool update <id> -c <conn-id> -n "New Name"
+    """
+    valid_types = ["connector"]
+    if tool_type and tool_type.lower() not in valid_types:
+        typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
+        raise typer.Exit(1)
+
+    if not connection_id and not name:
+        typer.echo("Error: At least one update field is required (--connection-id or --name)", err=True)
+        raise typer.Exit(1)
+
+    try:
+        client = get_client()
+        detected_type = tool_type.lower() if tool_type else None
+        tool_info = None
+
+        # Try to auto-detect tool type if not specified
+        if not detected_type:
+            # Try connection reference first
+            try:
+                tool_info = client.get_connection_reference(tool_id)
+                detected_type = "connector"
+            except Exception:
+                pass
+
+            if not detected_type:
+                typer.echo(
+                    f"Error: Could not find tool with ID '{tool_id}'. "
+                    "Please specify --type to indicate the tool type.",
+                    err=True
+                )
+                raise typer.Exit(1)
+        else:
+            # Get tool info for validation
+            if detected_type == "connector":
+                tool_info = client.get_connection_reference(tool_id)
+
+        # Perform the update based on tool type
+        if detected_type == "connector":
+            current_name = tool_info.get("connectionreferencedisplayname", tool_id)
+            current_conn = tool_info.get("connectionid", "")
+
+            # Show what will change
+            typer.echo(f"Updating connection reference '{current_name}'...")
+            if connection_id:
+                typer.echo(f"  Connection: {current_conn or '(none)'} → {connection_id}")
+            if name:
+                typer.echo(f"  Name: {current_name} → {name}")
+
+            # Perform the update
+            updated = client.update_connection_reference(
+                connection_reference_id=tool_id,
+                connection_id=connection_id,
+                display_name=name,
+            )
+
+            print_success(f"Updated connection reference '{updated.get('connectionreferencedisplayname', tool_id)}'")
+
+            # Display the updated tool info
+            display_data = {
+                "name": updated.get("connectionreferencedisplayname", ""),
+                "logical_name": updated.get("connectionreferencelogicalname", ""),
+                "id": updated.get("connectionreferenceid", ""),
+                "connector_id": updated.get("connectorid", ""),
+                "connection_id": updated.get("connectionid", ""),
+            }
+
+            if table:
+                print_table(
+                    [display_data],
+                    columns=["name", "logical_name", "connector_id", "connection_id", "id"],
+                    headers=["Name", "Logical Name", "Connector", "Connection ID", "Reference ID"],
+                )
+            else:
+                print_json(display_data)
+
+    except typer.Abort:
+        typer.echo("Aborted.")
+        raise typer.Exit(0)
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)

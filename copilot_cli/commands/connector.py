@@ -262,6 +262,11 @@ def connections_list(
         "-t",
         help="Display output as a formatted table instead of JSON",
     ),
+    include_authenticated_user: bool = typer.Option(
+        False,
+        "--include-authenticated-user",
+        help="Show the authenticated user for each connection (makes API calls to external services).",
+    ),
 ):
     """
     List connections or connection references.
@@ -323,11 +328,28 @@ def connections_list(
 
         formatted = [format_connection_for_display(c, connector_id) for c in connections]
 
+        # Fetch authenticated user info if requested
+        if include_authenticated_user:
+            for conn_data in formatted:
+                conn_id = conn_data.get("id", "")
+                if conn_data.get("status") == "Connected" and conn_id:
+                    user_info = client.get_connection_user(connector_id, conn_id)
+                    # Extract email/name from user info (varies by connector)
+                    auth_user = user_info.get("email") or user_info.get("mail") or user_info.get("name") or ""
+                    conn_data["authenticated_user"] = auth_user
+                else:
+                    conn_data["authenticated_user"] = ""
+
         if table:
+            columns = ["name", "id", "status", "created", "error"]
+            headers = ["Name", "Connection ID", "Status", "Created", "Error"]
+            if include_authenticated_user:
+                columns.insert(3, "authenticated_user")
+                headers.insert(3, "Authenticated User")
             print_table(
                 formatted,
-                columns=["name", "id", "status", "created", "error"],
-                headers=["Name", "Connection ID", "Status", "Created", "Error"],
+                columns=columns,
+                headers=headers,
             )
         else:
             print_json(formatted)
@@ -517,6 +539,11 @@ def connections_create(
         "--env",
         help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
     ),
+    no_wait: bool = typer.Option(
+        False,
+        "--no-wait",
+        help="Don't wait for OAuth authentication to complete (just open browser and exit).",
+    ),
 ):
     """
     Create a new connection for a connector.
@@ -578,7 +605,10 @@ def connections_create(
                 raise typer.Exit(1)
 
         if oauth:
-            # OAuth flow - create connection and return consent URL
+            import webbrowser
+            import time
+
+            # OAuth flow - create connection and get consent link
             result = client.create_oauth_connection(
                 connector_id=connector_id,
                 connection_name=name,
@@ -586,37 +616,66 @@ def connections_create(
             )
 
             connection_id = result.get("name", "")
-            consent_url = result.get("properties", {}).get("connectionParameters", {}).get("token", {}).get("oAuthSettings", {}).get("consentUrl")
-
-            # Try to extract consent link from various locations
-            if not consent_url:
-                # Check for consent link in statuses
-                statuses = result.get("properties", {}).get("statuses", [])
-                for status in statuses:
-                    if status.get("status") == "Unauthenticated":
-                        error = status.get("error", {})
-                        if isinstance(error, dict):
-                            consent_url = error.get("message", "")
-                            # Extract URL if embedded in message
-                            if "https://" in consent_url:
-                                import re
-                                urls = re.findall(r'https://[^\s\'"]+', consent_url)
-                                if urls:
-                                    consent_url = urls[0]
 
             print_success(f"Connection '{name}' created.")
             typer.echo(f"Connection ID: {connection_id}")
             typer.echo(f"Connector: {connector_id}")
             typer.echo("")
 
-            if consent_url and consent_url.startswith("https://"):
-                typer.echo("OAuth authentication required. Complete the consent flow:")
-                typer.echo(f"\n  {consent_url}\n")
-                typer.echo("After completing authentication in your browser, the connection will be ready.")
-            else:
-                typer.echo("Note: Connection created but requires authentication.")
-                typer.echo("Complete the OAuth flow in Power Platform admin center:")
+            # Get the consent link and open browser
+            typer.echo("Getting OAuth consent link...")
+            consent_link = client.get_consent_link(connector_id, connection_id, environment)
+
+            if not consent_link:
+                typer.echo("Error: Could not get consent link from API.", err=True)
+                typer.echo(f"Complete authentication manually at:")
                 typer.echo(f"  https://make.powerapps.com/environments/{environment}/connections")
+                raise typer.Exit(1)
+
+            typer.echo("Opening browser for OAuth authentication...")
+            webbrowser.open(consent_link)
+
+            if no_wait:
+                typer.echo(f"Check connection status: copilot connector connections list -c {connector_id} --table")
+                return
+
+            # Poll for connection status
+            typer.echo("")
+            typer.echo("Waiting for authentication to complete...")
+            typer.echo("(Complete the OAuth flow in your browser, then return here)")
+            typer.echo("")
+
+            max_attempts = 60  # 5 minutes at 5-second intervals
+            poll_interval = 5
+
+            for attempt in range(max_attempts):
+                time.sleep(poll_interval)
+
+                try:
+                    connections = client.list_connections(connector_id, environment)
+                    conn = next((c for c in connections if c.get("name") == connection_id), None)
+
+                    if conn:
+                        statuses = conn.get("properties", {}).get("statuses", [])
+                        if statuses:
+                            status = statuses[0].get("status", "Unknown")
+                            if status.lower() == "connected":
+                                typer.echo("")
+                                print_success(f"Authentication complete! Connection '{name}' is now connected.")
+                                return
+
+                    # Show progress
+                    elapsed = (attempt + 1) * poll_interval
+                    typer.echo(f"  Still waiting... ({elapsed}s elapsed)", nl=False)
+                    typer.echo("\r", nl=False)
+
+                except Exception:
+                    # Ignore polling errors, keep trying
+                    pass
+
+            typer.echo("")
+            typer.echo("Timed out waiting for authentication.")
+            typer.echo(f"Check connection status: copilot connector connections list -c {connector_id} --table")
 
         elif connector_id == "shared_azureaisearch":
             # Azure AI Search has specific parameters

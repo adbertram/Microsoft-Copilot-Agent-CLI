@@ -3128,6 +3128,66 @@ schemaName: {schema_name}
         response.raise_for_status()
         return True
 
+    def update_connection_reference(
+        self,
+        connection_reference_id: str,
+        connection_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ) -> dict:
+        """
+        Update a connection reference in the Dataverse environment.
+
+        Args:
+            connection_reference_id: The connection reference's unique identifier (GUID)
+            connection_id: New connection ID to associate with this reference
+            display_name: New display name for the connection reference
+
+        Returns:
+            Updated connection reference object
+
+        Raises:
+            ClientError: If the connection reference cannot be updated
+        """
+        url = f"{self.api_url}/connectionreferences({connection_reference_id})"
+        headers = self._get_headers()
+
+        # Build update payload with only provided fields
+        payload = {}
+        if connection_id is not None:
+            payload["connectionid"] = connection_id
+        if display_name is not None:
+            payload["connectionreferencedisplayname"] = display_name
+
+        if not payload:
+            raise ClientError("No update fields provided")
+
+        response = self._http_client.patch(url, headers=headers, json=payload, timeout=60.0)
+        response.raise_for_status()
+
+        # Fetch and return the updated record
+        get_response = self._http_client.get(url, headers=headers, timeout=60.0)
+        get_response.raise_for_status()
+        return get_response.json()
+
+    def get_connection_reference(self, connection_reference_id: str) -> dict:
+        """
+        Get a single connection reference by ID.
+
+        Args:
+            connection_reference_id: The connection reference's unique identifier (GUID)
+
+        Returns:
+            Connection reference object
+
+        Raises:
+            ClientError: If the connection reference is not found
+        """
+        url = f"{self.api_url}/connectionreferences({connection_reference_id})"
+        headers = self._get_headers()
+        response = self._http_client.get(url, headers=headers, timeout=60.0)
+        response.raise_for_status()
+        return response.json()
+
     def list_connections(
         self, connector_id: str, environment_id: Optional[str] = None
     ) -> list[dict]:
@@ -3478,6 +3538,112 @@ schemaName: {schema_name}
             raise ClientError(f"Failed to create connection: HTTP {e.response.status_code}: {error_detail}")
         except httpx.RequestError as e:
             raise ClientError(f"Connection request failed: {e}")
+
+    def get_consent_link(
+        self,
+        connector_id: str,
+        connection_id: str,
+        environment_id: str,
+    ) -> str:
+        """
+        Get the OAuth consent link for an unauthenticated connection.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_asana)
+            connection_id: The connection's unique identifier (GUID)
+            environment_id: Power Platform environment ID
+
+        Returns:
+            The consent URL to complete OAuth authentication
+
+        Raises:
+            ClientError: If getting consent link fails
+        """
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
+            f"{connector_id}/connections/{connection_id}/getConsentLink"
+            f"?api-version=2016-11-01&$filter=environment eq '{environment_id}'"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        body = {
+            "redirectUrl": "https://make.powerapps.com"
+        }
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=body, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("consentLink", "")
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to get consent link: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Consent link request failed: {e}")
+
+    def get_connection_user(
+        self,
+        connector_id: str,
+        connection_id: str,
+    ) -> dict:
+        """
+        Get the authenticated user for a connection by calling the connector's API.
+
+        This works by calling a user/me endpoint through the connector to retrieve
+        the authenticated user's information from the external service.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_asana)
+            connection_id: The connection's unique identifier (GUID)
+
+        Returns:
+            Dict with user info (varies by connector), or empty dict if not supported
+
+        Raises:
+            ClientError: If the request fails
+        """
+        apihub_token = get_access_token_from_azure_cli("https://apihub.azure.com")
+
+        # Map connectors to their user info endpoints
+        user_endpoints = {
+            "shared_asana": "/v2/users/me",
+            "shared_office365": "/v2/Me",
+            "shared_sharepointonline": "/_api/web/currentuser",
+            "shared_dynamicscrmonline": "/api/data/v9.2/WhoAmI",
+        }
+
+        # Get the appropriate endpoint for this connector
+        endpoint = user_endpoints.get(connector_id)
+        if not endpoint:
+            return {}
+
+        url = f"https://msmanaged-na.azure-apim.net/apim/{connector_id.replace('shared_', '')}/{connection_id}{endpoint}"
+
+        headers = {
+            "Authorization": f"Bearer {apihub_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception:
+            # Silently return empty if we can't get user info
+            return {}
 
     def close(self):
         """Close the HTTP client."""
