@@ -101,7 +101,7 @@ def tool_list(
       - prompt: AI Builder prompts for text analysis and generation
       - mcp: Model Context Protocol servers
 
-    Note: For connectors, use 'copilot connector list' instead.
+    Note: For connectors, use 'copilot connectors list' instead.
 
     Examples:
         copilot tool list --table                # All tools
@@ -112,7 +112,7 @@ def tool_list(
     valid_types = ["prompt", "mcp"]
     if tool_type and tool_type.lower() not in valid_types:
         typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
-        typer.echo("Note: For connectors, use 'copilot connector list' instead.")
+        typer.echo("Note: For connectors, use 'copilot connectors list' instead.")
         raise typer.Exit(1)
 
     try:

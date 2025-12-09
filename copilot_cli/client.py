@@ -1843,8 +1843,7 @@ action:
         if not connection_ref:
             raise ClientError(
                 "Connector tools require --connection-ref parameter.\n"
-                "Use 'copilot tool connector connections list --connector-id <connector>' to find existing connection references,\n"
-                "or create a connection in Power Platform and use its connection reference ID."
+                "Use 'copilot connection-references list --table' to find existing connection references."
             )
 
         connector_id, operation_id = tool_id.split(':', 1)
@@ -1862,7 +1861,7 @@ action:
                             raise ClientError(
                                 f"Operation '{operation_id}' has internal visibility and cannot be used as a tool.\n"
                                 f"Internal operations are not exposed in the Copilot Studio UI and may not work correctly.\n"
-                                f"Use 'copilot connector operations {connector_id}' to see available operations."
+                                f"Use 'copilot connectors get {connector_id}' to see available operations."
                             )
                         break
         except ClientError:
