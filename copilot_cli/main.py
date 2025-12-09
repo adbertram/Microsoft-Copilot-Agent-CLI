@@ -26,32 +26,14 @@ except ImportError:
     pass
 
 try:
-    from .commands import connector
-    app.add_typer(connector.app, name="connector", help="Manage Power Platform connectors")
-except ImportError:
-    pass
-
-try:
     from .commands import flow
     app.add_typer(flow.app, name="flow", help="Manage Power Automate flows")
 except ImportError:
     pass
 
 try:
-    from .commands import prompt
-    app.add_typer(prompt.app, name="prompt", help="Manage AI Builder prompts")
-except ImportError:
-    pass
-
-try:
-    from .commands import restapi
-    app.add_typer(restapi.app, name="restapi", help="Manage REST API tools")
-except ImportError:
-    pass
-
-try:
-    from .commands import mcp
-    app.add_typer(mcp.app, name="mcp", help="Manage MCP (Model Context Protocol) servers")
+    from .commands import tool
+    app.add_typer(tool.app, name="tool", help="Manage tools (prompts, connectors, REST APIs, MCP)")
 except ImportError:
     pass
 

@@ -256,12 +256,12 @@ class DataverseClient:
 
         return topics
 
-    def list_tools(self, bot_id: str, category: str = None) -> list[dict]:
+    def list_tools(self, bot_id: str = None, category: str = None) -> list[dict]:
         """
-        List tools for a specific bot.
+        List tools, optionally filtered by bot.
 
         Args:
-            bot_id: The bot's unique identifier
+            bot_id: Optional bot's unique identifier. If None, lists all tools across all agents.
             category: Optional filter by category ('agent', 'flow', 'prompt', 'connector', 'http')
 
         Returns:
@@ -276,10 +276,14 @@ class DataverseClient:
             - Connector: InvokeConnectorTaskAction
             - HTTP: InvokeHttpTaskAction
         """
+        # Build filter - always require componenttype eq 9 (Topic V2)
+        if bot_id:
+            filter_clause = f"_parentbotid_value eq {bot_id} and componenttype eq 9"
+        else:
+            filter_clause = "componenttype eq 9"
+
         result = self.get(
-            f"botcomponents?$filter=_parentbotid_value eq {bot_id} "
-            f"and componenttype eq 9"
-            f"&$orderby=name"
+            f"botcomponents?$filter={filter_clause}&$orderby=name"
         )
         components = result.get("value", [])
 
