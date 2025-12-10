@@ -805,10 +805,24 @@ copilot connections create -c shared_sql -n "SQL Server" \
 
 ### Delete Connection
 
+Delete a connection and optionally cascade delete dependent resources.
+
 ```bash
+# Basic deletion
 copilot connections delete <connection-id> -c shared_asana
 copilot connections delete <connection-id> -c shared_office365 --force
 copilot connections delete <connection-id> -c shared_azureaisearch --env Default-xxx
+
+# Cascade deletion - also delete connection references
+copilot connections delete <connection-id> -c shared_asana --include-connection-references
+copilot connections delete <connection-id> -c shared_asana --include-refs  # Short form
+
+# Cascade deletion - also delete agent tools using this connection
+copilot connections delete <connection-id> -c shared_asana --include-agent-tools
+copilot connections delete <connection-id> -c shared_asana --include-tools  # Short form
+
+# Cascade delete everything (tools, connection refs, and connection)
+copilot connections delete <connection-id> -c shared_asana --include-refs --include-tools
 ```
 
 **Options:**
@@ -816,7 +830,15 @@ copilot connections delete <connection-id> -c shared_azureaisearch --env Default
 |--------|-------------|
 | `-c, --connector-id` | **(Required)** The connector ID |
 | `--environment, --env` | Power Platform environment ID |
+| `--include-connection-references, --include-refs` | Also delete connection references pointing to this connection |
+| `--include-agent-tools, --include-tools` | Also delete agent connector tools using this connection |
 | `-f, --force` | Skip confirmation prompt |
+
+**Cascade Deletion:**
+- When using cascade options, the CLI will first identify all dependent resources
+- Shows counts and names before deletion for confirmation
+- Deletion order: agent tools → connection references → connection
+- Each dependent resource is deleted individually with status feedback
 
 **Connection Statuses:**
 | Status | Description |
