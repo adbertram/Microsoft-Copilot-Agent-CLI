@@ -542,6 +542,7 @@ def connections_create(
 
 
 @app.command("delete")
+@app.command("remove")
 def connections_delete(
     connection_id: str = typer.Argument(
         ...,

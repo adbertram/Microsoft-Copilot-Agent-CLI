@@ -159,6 +159,7 @@ def create_solution(
 
 
 @app.command("delete")
+@app.command("remove")
 def delete_solution(
     solution: str = typer.Argument(
         ...,
@@ -576,6 +577,7 @@ def create_publisher(
 
 
 @publisher_app.command("delete")
+@publisher_app.command("remove")
 def delete_publisher(
     publisher: str = typer.Argument(
         ...,

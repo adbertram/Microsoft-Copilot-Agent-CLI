@@ -602,6 +602,7 @@ def connectors_create(
 
 
 @app.command("delete")
+@app.command("remove")
 def connectors_delete(
     connector_id: str = typer.Argument(
         ...,

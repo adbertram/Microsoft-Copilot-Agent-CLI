@@ -1439,6 +1439,7 @@ def topic_enable(
 
 
 @topic_app.command("delete")
+@topic_app.command("remove")
 def topic_delete(
     topic_id: str = typer.Argument(
         ...,
