@@ -258,13 +258,21 @@ class DataverseClient:
 
         return topics
 
-    def list_tools(self, bot_id: str = None, category: str = None) -> list[dict]:
+    def list_tools(
+        self,
+        bot_id: str = None,
+        category: str = None,
+        connection_id: str = None,
+        connection_reference_id: str = None
+    ) -> list[dict]:
         """
-        List tools, optionally filtered by bot.
+        List tools, optionally filtered by bot and/or connection.
 
         Args:
             bot_id: Optional bot's unique identifier. If None, lists all tools across all agents.
             category: Optional filter by category ('agent', 'flow', 'prompt', 'connector', 'http')
+            connection_id: Optional connection ID to filter connector tools by
+            connection_reference_id: Optional connection reference ID to filter connector tools by
 
         Returns:
             List of tool component records
@@ -278,6 +286,8 @@ class DataverseClient:
             - Connector: InvokeConnectorTaskAction
             - HTTP: InvokeHttpTaskAction
         """
+        import yaml as yaml_lib
+
         # Build filter - always require componenttype eq 9 (Topic V2)
         if bot_id:
             filter_clause = f"_parentbotid_value eq {bot_id} and componenttype eq 9"
@@ -320,6 +330,47 @@ class DataverseClient:
                     if pattern in (t.get("schemaname") or "") or
                        pattern in (t.get("data") or "")
                 ]
+
+        # Apply connection filters if specified (only for connector tools)
+        if connection_id or connection_reference_id:
+            # First get connection references if filtering by connection_id
+            conn_ref_ids = set()
+            if connection_id:
+                conn_refs = self.list_connection_references(connection_id=connection_id)
+                conn_ref_ids = {ref.get("connectionreferenceid") for ref in conn_refs}
+
+            # Add explicitly provided connection_reference_id
+            if connection_reference_id:
+                conn_ref_ids.add(connection_reference_id)
+
+            # Filter tools by connection reference
+            filtered_tools = []
+            for tool in tools:
+                data = tool.get("data", "") or ""
+                if not data:
+                    continue
+
+                try:
+                    parsed_data = yaml_lib.safe_load(data)
+                    if not parsed_data:
+                        continue
+
+                    # Check action.connectionReference field
+                    action = parsed_data.get("action", {})
+                    conn_ref = action.get("connectionReference", "")
+
+                    if conn_ref:
+                        # connectionReference format: {bot_schema}.{connector_id}.{connection_ref_id}
+                        parts = conn_ref.split(".")
+                        if len(parts) >= 3:
+                            tool_conn_ref_id = parts[-1]
+                            if tool_conn_ref_id in conn_ref_ids:
+                                filtered_tools.append(tool)
+                except Exception:
+                    # Skip tools with invalid YAML
+                    continue
+
+            tools = filtered_tools
 
         return tools
 
@@ -3828,12 +3879,15 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Connection request failed: {e}")
 
-    def list_connection_references(self) -> list[dict]:
+    def list_connection_references(self, connection_id: Optional[str] = None) -> list[dict]:
         """
         List all connection references in the Dataverse environment.
 
         Connection references are solution-aware references to connections
         used in flows and agents.
+
+        Args:
+            connection_id: Optional connection ID to filter connection references by
 
         Returns:
             List of connection reference objects
@@ -3842,7 +3896,12 @@ schemaName: {schema_name}
             "connectionreferenceid,connectionreferencelogicalname,"
             "connectionreferencedisplayname,connectorid,connectionid,statecode"
         )
-        url = f"{self.api_url}/connectionreferences?$select={select}&$orderby=connectionreferencedisplayname"
+        url = f"{self.api_url}/connectionreferences?$select={select}"
+
+        if connection_id:
+            url += f"&$filter=connectionid eq '{connection_id}'"
+
+        url += "&$orderby=connectionreferencedisplayname"
         headers = self._get_headers()
         response = self._http_client.get(url, headers=headers, timeout=60.0)
         response.raise_for_status()
