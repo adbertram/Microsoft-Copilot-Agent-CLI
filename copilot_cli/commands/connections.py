@@ -384,12 +384,14 @@ def connections_create(
             import time
 
             # Show OAuth redirect URL configuration requirement
+            # Note: Power Platform strips the "shared_" prefix from connector_id for redirect URL
+            redirect_connector_id = connector_id.replace("shared_", "", 1) if connector_id.startswith("shared_") else connector_id
             typer.echo()
             typer.echo("⚠️  OAuth Redirect URL Configuration Required")
             typer.echo()
             typer.echo("Power Platform will use this redirect URL for OAuth:")
             typer.echo()
-            typer.echo(f"  https://global.consent.azure-apim.net/redirect/{connector_id}")
+            typer.echo(f"  https://global.consent.azure-apim.net/redirect/{redirect_connector_id}")
             typer.echo()
             typer.echo("You must register this EXACT URL in your OAuth app settings.")
             typer.echo()
