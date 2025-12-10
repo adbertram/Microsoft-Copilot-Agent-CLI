@@ -11,8 +11,8 @@ The Copilot CLI provides access to:
 - **Knowledge** - Add file-based and Azure AI Search knowledge sources
 - **Analytics** - Query Application Insights telemetry for troubleshooting
 - **Transcripts** - View conversation history for debugging
-- **Connectors** - List and inspect Power Platform connectors (API definitions)
-- **Connections** - Manage authenticated credentials for connectors
+- **Connectors** - List, inspect, create, and delete Power Platform connectors (API definitions)
+- **Connections** - Manage authenticated credentials for connectors (create, list, test, delete)
 - **Connection References** - Manage solution-aware pointers to connections
 - **Tools** - Manage agent tools (prompts, REST APIs, MCP servers)
 - **Solutions** - Manage solutions, publishers, and solution components
@@ -623,10 +623,99 @@ copilot connectors list --filter "office365"    # Filter by name
 ### Get Connector Details
 
 ```bash
-copilot connectors get <connector-id>
-copilot connectors get shared_office365
-copilot connectors get shared_asana
+copilot connectors get <connector-id>                        # Get connector with operations
+copilot connectors get shared_office365 --table              # Show operations as table
+copilot connectors get shared_asana --table
+copilot connectors get shared_asana --include-deprecated     # Include deprecated operations
+copilot connectors get shared_asana --include-internal       # Include internal operations
+copilot connectors get shared_asana --raw                    # Raw JSON output
 ```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-t, --table` | Display operations as formatted table |
+| `-d, --include-deprecated` | Include deprecated operations (hidden by default) |
+| `-i, --include-internal` | Include internal-visibility operations (cannot be used as agent tools) |
+| `-r, --raw` | Output raw JSON connector definition |
+
+### Create Custom Connector
+
+Create a new custom connector from an OpenAPI 2.0 (Swagger) definition.
+
+```bash
+# Basic connector (non-OAuth)
+copilot connectors create --name "My API" --swagger-file ./api.json
+
+# With description and custom branding
+copilot connectors create --name "My API" \
+    --swagger-file ./api.json \
+    --description "My custom API connector" \
+    --icon-brand-color "#ff6600"
+
+# OAuth connector with credentials
+copilot connectors create --name "My API" \
+    --swagger-file ./api.json \
+    --oauth-client-id "client123" \
+    --oauth-client-secret "secret456"
+
+# OAuth with custom redirect URL
+copilot connectors create --name "My API" \
+    --swagger-file ./api.json \
+    --oauth-client-id "client123" \
+    --oauth-client-secret "secret456" \
+    --oauth-redirect-url "https://custom.redirect.url"
+
+# Then create a connection
+copilot connections create --connector-id <connector-id> --name "My Connection" --oauth
+```
+
+**Requirements:**
+- OpenAPI definition must be in OpenAPI 2.0 (Swagger) format (not 3.0)
+- File must be valid JSON or YAML
+- Definition size must be less than 1 MB
+- Must include: `swagger`, `info`, `host`, `basePath`, `schemes`
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-n, --name` | **(Required)** Display name for the connector |
+| `-f, --swagger-file` | **(Required)** Path to OpenAPI 2.0 (Swagger) file |
+| `-d, --description` | Connector description |
+| `--icon-brand-color` | Icon brand color in hex format (default: #007ee5) |
+| `--environment, --env` | Environment ID (uses config if not provided) |
+| `--oauth-client-id` | OAuth 2.0 Client ID (required for OAuth connectors) |
+| `--oauth-client-secret` | OAuth 2.0 Client Secret (required for OAuth connectors) |
+| `--oauth-redirect-url` | Custom OAuth redirect URL |
+
+**OAuth Redirect URLs:**
+
+After creating an OAuth connector, register one of these redirect URLs in your OAuth app settings:
+- **Specific**: `https://global.consent.azure-apim.net/redirect/<connector-id>`
+- **Wildcard** (if supported): `https://global.consent.azure-apim.net/redirect/*`
+
+### Delete Custom Connector
+
+Delete a custom connector. Only custom connectors can be deleted; managed (Microsoft) connectors cannot.
+
+```bash
+# Delete with confirmation prompt
+copilot connectors delete shared_asana-20test-5fd251d00ef0afcb57-5fe2f45645c919b585
+
+# Delete without confirmation
+copilot connectors delete <connector-id> --force
+
+# Delete in specific environment
+copilot connectors delete <connector-id> --env Default-xxx
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--environment, --env` | Environment ID (uses config if not provided) |
+| `-f, --force` | Skip confirmation prompt |
+
+**Warning:** Deleting a connector will break any flows or agents that depend on it.
 
 ---
 

@@ -599,3 +599,81 @@ def connectors_create(
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
+
+
+@app.command("delete")
+def connectors_delete(
+    connector_id: str = typer.Argument(
+        ...,
+        help="The connector's unique identifier (e.g., shared_asana-20test-5fd251...)",
+    ),
+    environment: Optional[str] = typer.Option(
+        None,
+        "--environment",
+        "--env",
+        help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Delete a custom connector.
+
+    This permanently removes a custom connector from the Power Platform environment.
+    Only custom connectors can be deleted; managed (Microsoft) connectors cannot be deleted.
+
+    Warning: Deleting a connector may break flows or agents that depend on it.
+
+    Examples:
+        copilot connectors delete shared_asana-20test-5fd251d00ef0afcb57-5fe2f45645c919b585
+        copilot connectors delete <connector-id> --force
+        copilot connectors delete <connector-id> --env Default-xxx
+    """
+    try:
+        client = get_client()
+
+        # Get connector details to show what will be deleted
+        try:
+            connector = client.get_connector(connector_id, environment)
+            props = connector.get("properties", {})
+            connector_name = props.get("displayName", connector_id)
+
+            # Check if it's a custom connector
+            if not is_custom_connector(connector):
+                typer.echo(f"Error: Cannot delete managed connector '{connector_name}'", err=True)
+                typer.echo("Only custom connectors can be deleted.", err=True)
+                raise typer.Exit(1)
+
+        except Exception as e:
+            # If we can't get the connector, it might not exist
+            typer.echo(f"Warning: Could not verify connector details: {e}", err=True)
+            connector_name = connector_id
+
+        # Confirm deletion unless --force
+        if not force:
+            typer.echo(f"\nConnector: {connector_name}")
+            typer.echo(f"ID: {connector_id}")
+            typer.echo()
+            typer.echo("⚠️  Warning: This will permanently delete the connector.")
+            typer.echo("   Any flows or agents using this connector may break.")
+            typer.echo()
+            typer.echo("Continue? (y/N): ", nl=False)
+
+            response = input().strip().lower()
+            if response != 'y':
+                typer.echo("Cancelled.")
+                raise typer.Exit(0)
+
+        # Delete the connector
+        client.delete_custom_connector(connector_id, environment)
+
+        print_success(f"Connector '{connector_name}' deleted successfully!")
+        typer.echo(f"Connector ID: {connector_id}")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)

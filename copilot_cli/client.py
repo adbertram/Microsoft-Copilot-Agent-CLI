@@ -2744,6 +2744,63 @@ schemaName: {schema_name}
                 error_detail = e.response.text[:500] if e.response.text else str(e)
             raise ClientError(f"Failed to create connector: {error_detail}")
 
+    def delete_custom_connector(
+        self,
+        connector_id: str,
+        environment_id: Optional[str] = None
+    ) -> None:
+        """
+        Delete a custom connector via Power Apps API.
+
+        This uses the Power Apps Management API to delete custom connectors.
+        Only custom connectors can be deleted; managed (Microsoft) connectors cannot.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_asana-20test-5fd251...)
+            environment_id: Environment ID (optional, uses config if not provided)
+
+        Raises:
+            ClientError: If deletion fails or if attempting to delete a managed connector
+        """
+        # Get environment ID
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or provide --environment option."
+                )
+
+        # Get Power Apps token
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/{connector_id}"
+            f"?api-version=2016-11-01"
+            f"&$filter=environment eq '{environment_id}'"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.delete(url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to delete connector: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Request failed: {e}")
+
     # =========================================================================
     # Flow Methods
     # =========================================================================
