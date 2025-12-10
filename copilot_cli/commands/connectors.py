@@ -485,7 +485,6 @@ def connectors_create(
     description: Optional[str] = typer.Option(None, "--description", "-d", help="Connector description"),
     icon_brand_color: Optional[str] = typer.Option("#007ee5", "--icon-brand-color", help="Icon brand color (hex format)"),
     environment: Optional[str] = typer.Option(None, "--environment", "--env", help="Environment ID (defaults to configured environment)"),
-    create_connection: bool = typer.Option(False, "--create-connection", help="Automatically create a connection and open browser for OAuth consent"),
     oauth_client_id: Optional[str] = typer.Option(None, "--oauth-client-id", help="OAuth 2.0 Client ID (required for OAuth connectors)"),
     oauth_client_secret: Optional[str] = typer.Option(None, "--oauth-client-secret", help="OAuth 2.0 Client Secret (required for OAuth connectors)"),
     oauth_redirect_url: Optional[str] = typer.Option(None, "--oauth-redirect-url", help="Custom OAuth redirect URL (overrides default Power Platform redirect URL)"),
@@ -498,8 +497,8 @@ def connectors_create(
     For OAuth connectors, provide --oauth-client-id and --oauth-client-secret.
     Without these, the connector will be created but connections cannot authenticate.
 
-    Use --create-connection to automatically create a connection and open the
-    OAuth consent page in your browser (requires OAuth credentials).
+    After creating the connector, use 'copilot connections create' to create a
+    connection and authenticate.
 
     Examples:
       # Basic connector (non-OAuth)
@@ -509,10 +508,8 @@ def connectors_create(
       copilot connectors create --name "My API" --swagger-file ./api.json \\
         --oauth-client-id "client123" --oauth-client-secret "secret456"
 
-      # OAuth connector with auto connection creation
-      copilot connectors create --name "My API" --swagger-file ./api.json \\
-        --oauth-client-id "client123" --oauth-client-secret "secret456" \\
-        --create-connection
+      # Then create a connection
+      copilot connections create --connector-id <connector-id> --name "My Connection" --oauth
     """
     try:
         # Read and parse OpenAPI file
@@ -583,83 +580,21 @@ def connectors_create(
         typer.echo(f"Environment: {environment_id}")
         typer.echo()
 
-        # Create connection if requested
-        if create_connection:
+        # Show next steps with redirect URL info for OAuth connectors
+        typer.echo("⚠️  Next Steps:")
+
+        if uses_oauth:
             typer.echo()
-
-            # Check if this is an OAuth connector
-            if uses_oauth:
-                # Show required redirect URL
-                typer.echo("⚠️  OAuth Redirect URL Configuration Required")
-                typer.echo()
-                typer.echo("Power Platform will use this redirect URL for OAuth:")
-                typer.echo()
-                typer.echo(f"  https://global.consent.azure-apim.net/redirect/{connector_id}")
-                typer.echo()
-                typer.echo("You must register this EXACT URL in your OAuth app settings.")
-                typer.echo()
-                typer.echo("💡 Tip: If your OAuth provider supports wildcards, register:")
-                typer.echo("     https://global.consent.azure-apim.net/redirect/*")
-                typer.echo("     This will work for all connectors you create.")
-                typer.echo()
-                typer.echo("Have you registered the redirect URL? (y/N): ", nl=False)
-
-                response = input().strip().lower()
-                if response != 'y':
-                    typer.echo()
-                    typer.echo("Connection creation cancelled.")
-                    typer.echo("Register the redirect URL in your OAuth app, then run:")
-                    typer.echo(f"  copilot connections create --connector-id {connector_id}")
-                    return
-
+            typer.echo("1. Register this redirect URL in your OAuth app settings:")
+            typer.echo(f"   https://global.consent.azure-apim.net/redirect/{connector_id}")
             typer.echo()
-            typer.echo("Creating connection and opening browser for OAuth consent...")
+            typer.echo("   💡 Or use wildcard (if supported): https://global.consent.azure-apim.net/redirect/*")
             typer.echo()
-
-            try:
-                import webbrowser
-
-                connection_name = f"{name} Connection"
-
-                # Create the connection
-                connection_result = client.create_connection(
-                    connector_id=connector_id,
-                    connection_name=connection_name,
-                    environment_id=environment_id,
-                )
-
-                # Extract connection ID from result (it's in the 'name' field)
-                created_connection_id = connection_result.get("name")
-                if not created_connection_id:
-                    raise Exception("Connection created but no connection ID returned")
-
-                # Get consent link
-                typer.echo("Getting OAuth consent link...")
-                consent_link = client.get_consent_link(connector_id, created_connection_id, environment_id)
-
-                if not consent_link:
-                    typer.echo("Warning: Could not get consent link from API.", err=True)
-                    typer.echo(f"Complete authentication manually at:")
-                    typer.echo(f"  https://make.powerapps.com/environments/{environment_id}/connections")
-                else:
-                    typer.echo("Opening browser for OAuth authentication...")
-                    webbrowser.open(consent_link)
-                    typer.echo()
-                    typer.echo("✓ Browser opened for OAuth consent")
-                    typer.echo(f"  Connection ID: {created_connection_id}")
-                    typer.echo(f"  Connection Name: {connection_name}")
-                    typer.echo()
-                    typer.echo("Complete the OAuth flow in your browser to authorize the connection.")
-
-            except Exception as conn_err:
-                typer.echo(f"Warning: Failed to create connection: {conn_err}", err=True)
-                typer.echo(f"You can create a connection manually using:")
-                typer.echo(f"  copilot connections create --connector-id {connector_id}")
+            typer.echo("2. Create a connection:")
+            typer.echo(f"   copilot connections create --connector-id {connector_id} --name \"My Connection\" --oauth")
         else:
-            typer.echo("⚠️  Next Steps:")
-            typer.echo("1. Configure authentication secrets via Power Apps UI (https://make.powerapps.com)")
-            typer.echo(f"2. Test the connector using 'copilot connectors get {connector_id}'")
-            typer.echo(f"3. Create a connection using 'copilot connections create --connector-id {connector_id}'")
+            typer.echo(f"1. Test the connector: copilot connectors get {connector_id}")
+            typer.echo(f"2. Create a connection: copilot connections create --connector-id {connector_id} --name \"My Connection\"")
 
     except Exception as e:
         exit_code = handle_api_error(e)
