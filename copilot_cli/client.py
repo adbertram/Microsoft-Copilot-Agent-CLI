@@ -1688,12 +1688,73 @@ outputType: {{}}"""
         response.raise_for_status()
 
         # Extract component ID from OData-EntityId header
+        component_id = ""
         entity_id = response.headers.get("OData-EntityId", "")
         if entity_id:
             match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
             if match:
-                return match.group(1)
-        return ""
+                component_id = match.group(1)
+
+        # For connector tools, create and associate the bot-specific connection reference
+        if tool_type.lower() == 'connector' and component_id and connection_ref:
+            try:
+                # Parse connector_id from tool_id (format: "connector_id:operation_id")
+                connector_id = tool_id.split(':')[0] if ':' in tool_id else tool_id
+
+                # Build the connection reference logical name
+                conn_ref_logical_name = f"{bot_schema}.{connector_id}.{connection_ref}"
+
+                # Check if connection reference already exists
+                check_url = f"{self.api_url}/connectionreferences?$filter=connectionreferencelogicalname eq '{conn_ref_logical_name}'&$select=connectionreferenceid"
+                check_response = self._http_client.get(check_url, headers=headers_req, timeout=60.0)
+                check_response.raise_for_status()
+                existing_refs = check_response.json().get("value", [])
+
+                conn_ref_id = ""
+                if existing_refs:
+                    # Use existing connection reference
+                    conn_ref_id = existing_refs[0].get("connectionreferenceid", "")
+                else:
+                    # Create a new bot-specific connection reference
+                    conn_ref_data = {
+                        "connectionreferencelogicalname": conn_ref_logical_name,
+                        "connectionreferencedisplayname": conn_ref_logical_name,
+                        "connectorid": f"/providers/Microsoft.PowerApps/apis/{connector_id}",
+                        "connectionid": connection_ref,
+                        "statecode": 0,
+                        "statuscode": 1
+                    }
+
+                    conn_ref_url = f"{self.api_url}/connectionreferences"
+                    conn_ref_response = self._http_client.post(
+                        conn_ref_url, headers=headers_req, json=conn_ref_data, timeout=120.0
+                    )
+                    conn_ref_response.raise_for_status()
+
+                    # Extract connection reference ID
+                    conn_ref_entity_id = conn_ref_response.headers.get("OData-EntityId", "")
+                    if conn_ref_entity_id:
+                        match = re.search(r'connectionreferences\(([^)]+)\)', conn_ref_entity_id)
+                        if match:
+                            conn_ref_id = match.group(1)
+
+                # Associate the connection reference with the botcomponent
+                if conn_ref_id:
+                    assoc_url = f"{self.api_url}/botcomponents({component_id})/botcomponent_connectionreference/$ref"
+                    assoc_data = {
+                        "@odata.id": f"{self.api_url}/connectionreferences({conn_ref_id})"
+                    }
+                    assoc_response = self._http_client.post(
+                        assoc_url, headers=headers_req, json=assoc_data, timeout=120.0
+                    )
+                    assoc_response.raise_for_status()
+
+            except Exception as e:
+                # Log warning but don't fail - the tool was created successfully
+                import sys
+                print(f"Warning: Failed to create connection reference association: {e}", file=sys.stderr)
+
+        return component_id
 
     def _update_tool_inputs(self, data: str, inputs: dict) -> str:
         """
