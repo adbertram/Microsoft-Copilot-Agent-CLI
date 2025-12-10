@@ -1801,6 +1801,47 @@ outputType: {{}}"""
                     )
                     assoc_response.raise_for_status()
 
+                # Update bot authentication if not configured or invalid
+                # This ensures the agent can authenticate connector operations
+                try:
+                    auth_config_str = bot.get("authenticationconfiguration")
+                    auth_config = json.loads(auth_config_str) if auth_config_str else None
+
+                    # Check if bot has valid authentication configuration
+                    needs_auth_update = False
+                    if not auth_config or not auth_config.get("connectionName"):
+                        needs_auth_update = True
+                    else:
+                        # Verify the configured connection exists
+                        current_conn_id = auth_config.get("connectionName")
+                        try:
+                            conn_check_url = f"{self.api_url}/connections({current_conn_id})"
+                            conn_check_response = self._http_client.get(conn_check_url, headers=headers_req, timeout=30.0)
+                            if conn_check_response.status_code == 404:
+                                needs_auth_update = True
+                        except Exception:
+                            # Connection check failed, assume it's invalid
+                            needs_auth_update = True
+
+                    if needs_auth_update:
+                        # Update bot authentication to use this connection
+                        new_auth_config = {
+                            "$kind": "BotAuthenticationConfiguration",
+                            "connectionName": connection_ref
+                        }
+                        self.update_bot_auth(
+                            bot_id=bot_id,
+                            mode=3,  # Custom Azure Active Directory
+                            trigger=0,  # As Needed
+                            configuration=new_auth_config
+                        )
+                        import sys
+                        print(f"Updated bot authentication to use connection: {connection_ref}", file=sys.stderr)
+                except Exception as auth_err:
+                    # Log warning but don't fail
+                    import sys
+                    print(f"Warning: Failed to update bot authentication: {auth_err}", file=sys.stderr)
+
             except Exception as e:
                 # Log warning but don't fail - the tool was created successfully
                 import sys
