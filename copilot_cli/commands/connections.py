@@ -560,6 +560,18 @@ def connections_delete(
         "--env",
         help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
     ),
+    include_connection_references: bool = typer.Option(
+        False,
+        "--include-connection-references",
+        "--include-refs",
+        help="Also delete connection references that point to this connection",
+    ),
+    include_agent_tools: bool = typer.Option(
+        False,
+        "--include-agent-tools",
+        "--include-tools",
+        help="Also delete agent connector tools that use this connection",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -573,10 +585,19 @@ def connections_delete(
     Permanently removes a connection from the Power Platform environment.
     This may break flows or agents that depend on this connection.
 
+    Use --include-connection-references to also delete connection references
+    that point to this connection.
+
+    Use --include-agent-tools to also delete agent connector tools that use
+    this connection. This will remove the tools from all agents.
+
     Examples:
         copilot connections delete <guid> -c shared_asana
         copilot connections delete <guid> -c shared_office365 --force
         copilot connections delete <guid> -c shared_azureaisearch --env Default-xxx
+        copilot connections delete <guid> -c shared_asana --include-connection-references
+        copilot connections delete <guid> -c shared_asana --include-agent-tools
+        copilot connections delete <guid> -c shared_asana --include-refs --include-tools
     """
     try:
         client = get_client()
@@ -605,13 +626,74 @@ def connections_delete(
         except Exception:
             pass
 
+        # Check for connection references if requested
+        connection_refs_to_delete = []
+        if include_connection_references:
+            typer.echo("\nChecking for connection references...")
+            connection_refs = client.list_connection_references(connection_id=connection_id)
+            if connection_refs:
+                typer.echo(f"Found {len(connection_refs)} connection reference(s) pointing to this connection:")
+                for ref in connection_refs:
+                    ref_name = ref.get("connectionreferencedisplayname", "Unnamed")
+                    ref_id = ref.get("connectionreferenceid", "")
+                    typer.echo(f"  - {ref_name} ({ref_id})")
+                connection_refs_to_delete = connection_refs
+            else:
+                typer.echo("No connection references found for this connection.")
+
+        # Check for agent tools if requested
+        tools_to_delete = []
+        if include_agent_tools:
+            typer.echo("\nChecking for agent connector tools...")
+            tools = client.list_tools(connection_id=connection_id)
+            if tools:
+                typer.echo(f"Found {len(tools)} agent connector tool(s) using this connection:")
+                for tool in tools:
+                    tool_name = tool.get("name", "Unnamed")
+                    tool_id = tool.get("botcomponentid", "")
+                    bot_id = tool.get("_parentbotid_value", "")
+                    typer.echo(f"  - {tool_name} ({tool_id}) in agent {bot_id}")
+                tools_to_delete = tools
+            else:
+                typer.echo("No agent connector tools found using this connection.")
+
         if not force:
             typer.echo("\nWARNING: This may break flows or agents using this connection.")
+            if connection_refs_to_delete:
+                typer.echo(f"WARNING: This will also delete {len(connection_refs_to_delete)} connection reference(s).")
+            if tools_to_delete:
+                typer.echo(f"WARNING: This will also delete {len(tools_to_delete)} agent connector tool(s).")
             confirm = typer.confirm("Are you sure you want to delete this connection?")
             if not confirm:
                 typer.echo("Cancelled.")
                 raise typer.Exit(0)
 
+        # Delete agent tools first (before connection references, as tools depend on them)
+        if tools_to_delete:
+            typer.echo(f"\nDeleting {len(tools_to_delete)} agent connector tool(s)...")
+            for tool in tools_to_delete:
+                tool_id = tool.get("botcomponentid")
+                tool_name = tool.get("name", "Unnamed")
+                try:
+                    # cleanup_connection_ref=False because we may be deleting the connection reference separately
+                    client.remove_tool(tool_id, cleanup_connection_ref=False)
+                    typer.echo(f"  ✓ Deleted agent tool: {tool_name}")
+                except Exception as e:
+                    typer.echo(f"  ✗ Failed to delete agent tool {tool_name}: {e}", err=True)
+
+        # Delete connection references
+        if connection_refs_to_delete:
+            typer.echo(f"\nDeleting {len(connection_refs_to_delete)} connection reference(s)...")
+            for ref in connection_refs_to_delete:
+                ref_id = ref.get("connectionreferenceid")
+                ref_name = ref.get("connectionreferencedisplayname", "Unnamed")
+                try:
+                    client.delete_connection_reference(ref_id)
+                    typer.echo(f"  ✓ Deleted connection reference: {ref_name}")
+                except Exception as e:
+                    typer.echo(f"  ✗ Failed to delete connection reference {ref_name}: {e}", err=True)
+
+        # Delete the connection
         client.delete_connection(connection_id, connector_id, environment)
         print_success(f"Connection {connection_id} deleted successfully.")
 
