@@ -1810,43 +1810,57 @@ outputType: {{}}"""
 
     def _update_tool_inputs(self, data: str, inputs: dict) -> str:
         """
-        Update input default values in tool YAML data.
+        Update input values in tool YAML data.
 
         Uses regex to preserve the original YAML structure while only modifying
-        the specific input defaultValue fields.
+        the specific input value fields.
 
         Args:
             data: The YAML data string from the tool component
-            inputs: Dict of property names to default values, e.g., {"workspace": "123", "projects": "456"}
+            inputs: Dict of property names to values, e.g., {"workspace": "123", "projects": "456"}
 
         Returns:
             Updated YAML data string
         """
+        # Normalize line endings to \n for processing, then restore original style
+        original_has_crlf = '\r\n' in data
+        if original_has_crlf:
+            data = data.replace('\r\n', '\n')
+
         # Check if inputs section exists
         has_inputs_section = 'inputs:' in data
 
-        for prop_name, default_value in inputs.items():
-            # Check if this input already exists with defaultValue
-            # Pattern matches: "- kind: ManualTaskInput\n    propertyName: X\n    defaultValue: Y"
-            pattern_with_default = rf'(- kind: ManualTaskInput\s*\n\s*propertyName: {prop_name}\s*\n\s*)defaultValue:[^\n]*'
-            if re.search(pattern_with_default, data):
-                # Update existing defaultValue
-                data = re.sub(pattern_with_default, rf'\1defaultValue: {default_value}', data)
+        for prop_name, input_value in inputs.items():
+            # Escape special YAML characters in value
+            escaped_value = str(input_value)
+            if any(c in escaped_value for c in [':', '#', '{', '}', '[', ']', ',', '&', '*', '?', '|', '-', '<', '>', '=', '!', '%', '@', '`']):
+                escaped_value = f'"{escaped_value}"'
+
+            # Check if this input already exists with value
+            # Pattern matches: "- kind: ManualTaskInput\n    propertyName: X\n    value: Y"
+            pattern_with_value = rf'(- kind: ManualTaskInput\s*\n\s*propertyName: {re.escape(prop_name)}\s*\n\s*)value:[^\n]*'
+            if re.search(pattern_with_value, data):
+                # Update existing value
+                data = re.sub(pattern_with_value, rf'\1value: {escaped_value}', data)
             else:
-                # Check if input exists without defaultValue
-                pattern = rf'(- kind: ManualTaskInput\s*\n\s*propertyName: {prop_name})\s*\n'
+                # Check if input exists without value (just kind and propertyName)
+                pattern = rf'(- kind: ManualTaskInput\s*\n\s*propertyName: {re.escape(prop_name)})\s*\n'
                 if re.search(pattern, data):
-                    # Add defaultValue after propertyName
-                    data = re.sub(pattern, rf'\1\n    defaultValue: {default_value}\n', data)
+                    # Add value after propertyName
+                    data = re.sub(pattern, rf'\1\n    value: {escaped_value}\n', data)
                 elif not has_inputs_section:
-                    # Need to add inputs section - add after kind: TaskDialog
-                    new_input = f"inputs:\n  - kind: ManualTaskInput\n    propertyName: {prop_name}\n    defaultValue: {default_value}\n\n"
+                    # Need to add inputs section - add after kind: TaskDialog line
+                    new_input = f"inputs:\n  - kind: ManualTaskInput\n    propertyName: {prop_name}\n    value: {escaped_value}\n"
                     data = re.sub(r'(kind: TaskDialog\n)', rf'\1{new_input}', data)
                     has_inputs_section = True
                 else:
                     # inputs section exists but this input doesn't - add to it
-                    new_input = f"  - kind: ManualTaskInput\n    propertyName: {prop_name}\n    defaultValue: {default_value}\n\n"
+                    new_input = f"  - kind: ManualTaskInput\n    propertyName: {prop_name}\n    value: {escaped_value}\n"
                     data = re.sub(r'(inputs:\n)', rf'\1{new_input}', data)
+
+        # Restore original line ending style
+        if original_has_crlf:
+            data = data.replace('\n', '\r\n')
 
         return data
 
