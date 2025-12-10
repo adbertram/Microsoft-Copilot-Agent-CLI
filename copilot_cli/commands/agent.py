@@ -2370,9 +2370,10 @@ def tool_add(
                 typer.echo("an authenticated connection for that connector.")
                 typer.echo("")
                 typer.echo("Steps to create one:")
-                typer.echo(f"  1. Create a connection: copilot connections create -c {connector_id} -n 'My {connector_id}' --oauth")
-                typer.echo("  2. A connection reference will be created automatically")
-                typer.echo("  3. Then retry this command")
+                typer.echo(f"  1. Check if a connection exists: copilot connections list --connector-id {connector_id} --table")
+                typer.echo(f"  2. If no connection exists, create one: copilot connections create -c {connector_id} -n 'My Connection' --oauth")
+                typer.echo(f"  3. Create a connection reference: copilot connection-references create -n 'My Reference' -c <connection-id>")
+                typer.echo("  4. Then retry this command")
                 raise typer.Exit(1)
             elif len(matching_refs) == 1:
                 # Auto-select the only matching connection reference
