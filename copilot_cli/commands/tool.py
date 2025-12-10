@@ -9,7 +9,7 @@ from ..output import print_json, print_table, print_success, handle_api_error
 from . import prompt, restapi, mcp
 
 
-app = typer.Typer(help="Manage agent tools (prompts, REST APIs, MCP servers)")
+app = typer.Typer(help="Manage agent tools (prompts, REST APIs, MCP servers, connectors)")
 
 # Register type-specific subcommands
 app.add_typer(prompt.app, name="prompt", help="Manage AI Builder prompts")
@@ -34,6 +34,85 @@ AIPLUGIN_SUBTYPE_LABELS = {
     7: "Rest Api",
     8: "Custom Connector",
 }
+
+
+def is_custom_connector(connector: dict) -> bool:
+    """Check if a connector is custom (user-created) vs managed (Microsoft)."""
+    props = connector.get("properties", {})
+    return props.get("isCustomApi", False)
+
+
+def extract_connector_operations(
+    connector: dict,
+    include_deprecated: bool = False,
+    include_internal: bool = False,
+    include_triggers: bool = False,
+    is_installed: bool = False,
+) -> list:
+    """
+    Extract operations (actions/triggers) from connector swagger definition.
+
+    Args:
+        connector: The connector definition with swagger
+        include_deprecated: If True, include deprecated operations
+        include_internal: If True, include internal-visibility operations
+        include_triggers: If True, include triggers (not supported in Copilot agents)
+        is_installed: Whether the connector has an active connection
+
+    Returns:
+        List of operation dicts with connector info and operation details
+    """
+    operations = []
+    props = connector.get("properties", {})
+    connector_id = connector.get("name", "")
+    connector_name = props.get("displayName") or connector_id
+    publisher = props.get("publisher", "")
+    is_custom = is_custom_connector(connector)
+
+    swagger = props.get("swagger", {})
+    paths = swagger.get("paths", {})
+
+    for path, methods in paths.items():
+        for method, details in methods.items():
+            if method in ["get", "post", "put", "patch", "delete"]:
+                op_id = details.get("operationId")
+                if not op_id:
+                    continue
+
+                is_deprecated = details.get("deprecated", False)
+                visibility = details.get("x-ms-visibility", "normal")
+                is_internal = visibility == "internal"
+
+                # Determine if trigger or action
+                is_trigger = details.get("x-ms-trigger") is not None
+                op_type = "Trigger" if is_trigger else "Action"
+
+                # Skip deprecated unless explicitly requested
+                if is_deprecated and not include_deprecated:
+                    continue
+
+                # Skip internal unless explicitly requested
+                if is_internal and not include_internal:
+                    continue
+
+                # Skip triggers unless explicitly requested (triggers not supported in Copilot agents)
+                if is_trigger and not include_triggers:
+                    continue
+
+                op_name = details.get("summary") or op_id
+
+                operations.append({
+                    "name": f"{connector_name} - {op_name}",
+                    "type": "Connector",
+                    "publisher": publisher,
+                    "installed": is_installed,
+                    "managed": not is_custom,
+                    "id": f"{connector_id}:{op_id}",
+                    "op_type": op_type,
+                    "_component_type": None,
+                })
+
+    return operations
 
 
 def format_unified_tool(tool: dict, tool_type: str) -> dict:
@@ -70,7 +149,7 @@ def tool_list(
         None,
         "--type",
         "-T",
-        help="Filter by tool type: prompt, mcp",
+        help="Filter by tool type: prompt, mcp, connector",
     ),
     installed_only: bool = typer.Option(
         False,
@@ -84,6 +163,34 @@ def tool_list(
         "-f",
         help="Filter by name (case-insensitive)",
     ),
+    include_connector_actions: bool = typer.Option(
+        False,
+        "--include-connector-actions",
+        help="Show individual connector actions instead of connectors. Requires --connector-id.",
+    ),
+    connector_id: Optional[str] = typer.Option(
+        None,
+        "--connector-id",
+        "-c",
+        help="Connector ID to fetch actions from (required with --include-connector-actions)",
+    ),
+    include_deprecated: bool = typer.Option(
+        False,
+        "--include-deprecated",
+        "-d",
+        help="Include deprecated operations (hidden by default). Only with --include-connector-actions.",
+    ),
+    include_internal: bool = typer.Option(
+        False,
+        "--include-internal",
+        "-I",
+        help="Include internal operations (hidden by default). Only with --include-connector-actions.",
+    ),
+    include_unsupported_triggers: bool = typer.Option(
+        False,
+        "--include-unsupported-triggers",
+        help="Include triggers (not supported in Copilot agents). Only with --include-connector-actions.",
+    ),
     table: bool = typer.Option(
         False,
         "--table",
@@ -94,25 +201,42 @@ def tool_list(
     """
     List agent tools available in your environment.
 
-    Shows AI Builder prompts and MCP servers that can be added to Copilot Studio agents.
-    The 'Installed' column shows which tools are configured in your environment.
+    Shows AI Builder prompts, MCP servers, and connectors that can be added
+    to Copilot Studio agents.
 
     Tool Types:
       - prompt: AI Builder prompts for text analysis and generation
       - mcp: Model Context Protocol servers
+      - connector: Power Platform connectors (Asana, SharePoint, etc.)
 
-    Note: For connectors, use 'copilot connectors list' instead.
+    Connector Actions:
+      By default, connectors are shown as top-level entries. Use
+      --include-connector-actions with --connector-id to see individual
+      actions (operations) available within a specific connector.
 
     Examples:
-        copilot tool list --table                # All tools
-        copilot tool list --installed --table    # Only installed tools
-        copilot tool list --type prompt --table  # AI Builder prompts only
-        copilot tool list --filter "excel"       # Search by name
+        copilot tool list --table                    # All tools
+        copilot tool list --installed --table        # Only installed tools
+        copilot tool list --type prompt --table      # AI Builder prompts only
+        copilot tool list --type connector --table   # Connectors only
+        copilot tool list --filter "asana"           # Search by name
+
+        # Show individual actions for a specific connector
+        copilot tool list --type connector --include-connector-actions --connector-id shared_asana --table
     """
-    valid_types = ["prompt", "mcp"]
+    valid_types = ["prompt", "mcp", "connector"]
     if tool_type and tool_type.lower() not in valid_types:
         typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
-        typer.echo("Note: For connectors, use 'copilot connectors list' instead.")
+        raise typer.Exit(1)
+
+    # Validate --include-connector-actions requires --connector-id
+    if include_connector_actions and not connector_id:
+        typer.echo("Error: --include-connector-actions requires --connector-id to specify which connector to fetch actions from.", err=True)
+        raise typer.Exit(1)
+
+    # Validate --connector-id only makes sense with connector type
+    if connector_id and tool_type and tool_type.lower() != "connector":
+        typer.echo("Error: --connector-id can only be used with --type connector", err=True)
         raise typer.Exit(1)
 
     try:
@@ -136,6 +260,48 @@ def tool_list(
                 formatted = format_unified_tool(m, "mcp")
                 if not installed_only or formatted["installed"]:
                     all_tools.append(formatted)
+
+        if "connector" in types_to_fetch:
+            # Fetch connections to determine which connectors are "installed"
+            connections = client.list_connections()
+            installed_connector_ids = {
+                conn.get("properties", {}).get("apiId", "").split("/")[-1]
+                for conn in connections
+            }
+
+            if include_connector_actions and connector_id:
+                # Fetch a single connector with swagger/actions and show its operations
+                connector = client.get_connector(connector_id)
+                is_installed = connector_id in installed_connector_ids
+                operations = extract_connector_operations(
+                    connector,
+                    include_deprecated=include_deprecated,
+                    include_internal=include_internal,
+                    include_triggers=include_unsupported_triggers,
+                    is_installed=is_installed,
+                )
+                for op in operations:
+                    if not installed_only or op["installed"]:
+                        all_tools.append(op)
+            else:
+                # Default: Show connectors as top-level entries (fast)
+                connectors = client.list_connectors()
+                for c in connectors:
+                    props = c.get("properties", {})
+                    is_custom = is_custom_connector(c)
+                    conn_id = c.get("name", "")
+                    is_installed = conn_id in installed_connector_ids
+                    formatted = {
+                        "name": props.get("displayName") or conn_id,
+                        "type": "Connector",
+                        "publisher": props.get("publisher", ""),
+                        "installed": is_installed,
+                        "managed": not is_custom,
+                        "id": conn_id,
+                        "_component_type": None,
+                    }
+                    if not installed_only or formatted["installed"]:
+                        all_tools.append(formatted)
 
         if not all_tools:
             typer.echo("No tools found.")
@@ -168,7 +334,7 @@ def tool_list(
             tool.pop("_component_type", None)
 
         # Sort by type then name
-        type_order = {"Prompt": 0, "MCP": 1}
+        type_order = {"Connector": 0, "Prompt": 1, "MCP": 2}
         all_tools.sort(key=lambda x: (
             type_order.get(x["type"], 99),
             x["name"].lower()
