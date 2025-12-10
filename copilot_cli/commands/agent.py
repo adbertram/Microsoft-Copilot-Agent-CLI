@@ -1985,22 +1985,31 @@ def tool_get(
 
         # Extract details from YAML data
         parsed_data = {}
+        yaml_parse_error = None
         if data:
             try:
                 parsed_data = yaml_lib.safe_load(data) or {}
-            except Exception:
-                pass
+            except Exception as e:
+                yaml_parse_error = str(e)
 
-        # Build display output
+        # Build display output - Basic Info Section
+        typer.echo("=" * 60)
         typer.echo(f"Tool: {tool.get('name', 'Unknown')}")
+        typer.echo("=" * 60)
         typer.echo(f"Component ID: {tool.get('botcomponentid', '')}")
         typer.echo(f"Category: {category}")
         typer.echo(f"Schema Name: {schema_name}")
         typer.echo(f"Status: {tool.get('statecode@OData.Community.Display.V1.FormattedValue', 'Active')}")
+
+        # Show entity-level description if present
+        entity_description = tool.get("description", "")
+        if entity_description:
+            typer.echo(f"Entity Description: {entity_description}")
         typer.echo("")
 
         # Display parsed YAML fields
         if parsed_data:
+            typer.echo("--- Configuration ---")
             if parsed_data.get("modelDisplayName"):
                 typer.echo(f"Display Name: {parsed_data.get('modelDisplayName')}")
             if parsed_data.get("modelDescription"):
@@ -2019,63 +2028,138 @@ def tool_get(
             if confirm_msg:
                 typer.echo(f"Confirmation Message: {confirm_msg}")
 
-            typer.echo("")
-
             # Show inputs
             inputs = parsed_data.get("inputs") or []
             if inputs:
-                typer.echo("Inputs:")
+                typer.echo("")
+                typer.echo("--- Inputs ---")
                 for inp in inputs:
                     inp_name = inp.get("name", "unknown")
                     inp_type = inp.get("dataType", "unknown")
                     inp_required = inp.get("isRequired", False)
                     inp_desc = inp.get("description", "")
                     default_val = inp.get("defaultValue")
-                    req_marker = "*" if inp_required else ""
-                    typer.echo(f"  {inp_name}{req_marker} ({inp_type})")
+                    visible = inp.get("isVisible", True)
+                    req_marker = " [required]" if inp_required else ""
+                    vis_marker = " [hidden]" if not visible else ""
+                    typer.echo(f"  {inp_name} ({inp_type}){req_marker}{vis_marker}")
                     if inp_desc:
                         typer.echo(f"    Description: {inp_desc}")
                     if default_val is not None:
                         typer.echo(f"    Default: {default_val}")
-                typer.echo("")
 
-            # Show outputs
+            # Show outputs (supports both 'name' and 'propertyName' formats)
             outputs = parsed_data.get("outputs") or []
             if outputs:
-                typer.echo("Outputs:")
+                typer.echo("")
+                typer.echo("--- Outputs ---")
                 for out in outputs:
-                    out_name = out.get("name", "unknown")
-                    out_type = out.get("dataType", "unknown")
+                    out_name = out.get("name") or out.get("propertyName", "unknown")
+                    out_type = out.get("dataType", "")
                     out_desc = out.get("description", "")
-                    typer.echo(f"  {out_name} ({out_type})")
+                    type_suffix = f" ({out_type})" if out_type else ""
+                    typer.echo(f"  {out_name}{type_suffix}")
                     if out_desc:
                         typer.echo(f"    Description: {out_desc}")
-                typer.echo("")
 
-            # Show action-specific details based on category
+        elif yaml_parse_error and data:
+            # YAML couldn't be parsed, but try to extract key fields with regex
+            import re
+            typer.echo("--- Configuration ---")
+            typer.echo("(Note: YAML data contains formatting issues)")
+            # Try to extract modelDisplayName
+            display_match = re.search(r'modelDisplayName:\s*(.+?)(?:\n|$)', data)
+            if display_match:
+                typer.echo(f"Display Name: {display_match.group(1).strip()}")
+            # Try to extract modelDescription
+            desc_match = re.search(r'modelDescription:\s*(.+?)(?:\noutputs:|$)', data, re.DOTALL)
+            if desc_match:
+                desc = desc_match.group(1).strip()
+                if len(desc) > 200:
+                    desc = desc[:200] + "..."
+                typer.echo(f"Description: {desc}")
+
+            # Try to extract outputs from raw YAML
+            typer.echo("")
+            typer.echo("--- Outputs ---")
+            output_matches = re.findall(r'propertyName:\s*(\S+)', data)
+            for out_name in output_matches:
+                typer.echo(f"  {out_name}")
+
+            # Try to extract action details
+            typer.echo("")
+            typer.echo("--- Action Details ---")
+            kind_match = re.search(r'kind:\s*(\S+)', data)
+            if kind_match and "TaskDialog" not in kind_match.group(1):
+                typer.echo(f"Action Type: {kind_match.group(1)}")
+            # Look for action kind specifically
+            action_kind_match = re.search(r'action:\s*\n\s*kind:\s*(\S+)', data)
+            if action_kind_match:
+                typer.echo(f"Action Type: {action_kind_match.group(1)}")
+
+            conn_ref_match = re.search(r'connectionReference:\s*(\S+)', data)
+            if conn_ref_match:
+                typer.echo(f"Connection Ref: {conn_ref_match.group(1)}")
+
+            op_id_match = re.search(r'operationId:\s*(\S+)', data)
+            if op_id_match:
+                typer.echo(f"Operation ID: {op_id_match.group(1)}")
+
+        # Show action-specific details - outside of if/elif for parsed data
+        if parsed_data:
+            # Support both 'actions' (list) and 'action' (single object) formats
             actions = parsed_data.get("actions") or []
+            single_action = parsed_data.get("action")
+            if single_action:
+                actions = [single_action]
             if actions and len(actions) > 0:
                 action = actions[0]  # Usually there's one main action
                 action_kind = action.get("kind", "")
+                typer.echo("")
+                typer.echo("--- Action Details ---")
                 typer.echo(f"Action Type: {action_kind}")
 
                 # Connector-specific details
                 if "Connector" in action_kind:
                     connector_id = action.get("connectorId", "")
                     operation_id = action.get("operationId", "")
-                    conn_ref = action.get("connectionReferenceLogicalName", "")
+                    # Support both connectionReferenceLogicalName and connectionReference
+                    conn_ref = action.get("connectionReferenceLogicalName") or action.get("connectionReference", "")
                     if connector_id:
-                        typer.echo(f"Connector: {connector_id}")
+                        typer.echo(f"Connector ID: {connector_id}")
                     if operation_id:
-                        typer.echo(f"Operation: {operation_id}")
+                        typer.echo(f"Operation ID: {operation_id}")
                     if conn_ref:
-                        typer.echo(f"Connection Reference: {conn_ref}")
+                        typer.echo(f"Connection Ref: {conn_ref}")
+
+                    # Show connection properties if present
+                    conn_props = action.get("connectionProperties") or {}
+                    if conn_props:
+                        mode = conn_props.get("mode", "")
+                        if mode:
+                            typer.echo(f"Connection Mode: {mode}")
+
+                    # Show input mappings if present
+                    input_params = action.get("inputParameters") or {}
+                    if input_params:
+                        typer.echo("Input Mappings:")
+                        for param_name, param_value in input_params.items():
+                            typer.echo(f"  {param_name}: {param_value}")
+
+                    # Show output mappings if present
+                    output_params = action.get("outputParameters") or {}
+                    if output_params:
+                        typer.echo("Output Mappings:")
+                        for param_name, param_value in output_params.items():
+                            typer.echo(f"  {param_name}: {param_value}")
 
                 # Agent-specific details
                 elif "ConnectedAgent" in action_kind:
                     target_id = action.get("agentId", "")
                     if target_id:
-                        typer.echo(f"Target Agent: {target_id}")
+                        typer.echo(f"Target Agent ID: {target_id}")
+                    include_history = action.get("includeConversationHistory", False)
+                    typer.echo(f"Include History: {include_history}")
 
                 # Flow-specific details
                 elif "Flow" in action_kind:
@@ -2094,12 +2178,18 @@ def tool_get(
 
         # Show timestamps
         typer.echo("")
+        typer.echo("--- Metadata ---")
         created = tool.get("createdon", "")
         modified = tool.get("modifiedon", "")
         if created:
             typer.echo(f"Created: {created}")
         if modified:
             typer.echo(f"Modified: {modified}")
+
+        # Show parent bot info
+        parent_bot = tool.get("_parentbotid_value", "")
+        if parent_bot:
+            typer.echo(f"Parent Bot: {parent_bot}")
 
     except Exception as e:
         exit_code = handle_api_error(e)

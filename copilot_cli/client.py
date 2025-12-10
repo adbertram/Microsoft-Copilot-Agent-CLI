@@ -1473,14 +1473,66 @@ outputType: {{}}"""
                 return match.group(1)
         return ""
 
-    def remove_tool(self, component_id: str) -> None:
+    def remove_tool(self, component_id: str, cleanup_connection_ref: bool = True) -> None:
         """
         Remove a tool from a bot.
 
+        For connector tools, this also removes the associated bot-specific
+        connection reference if it's not used by any other tools.
+
         Args:
             component_id: The tool component's unique identifier
+            cleanup_connection_ref: Whether to clean up unused connection references (default True)
         """
+        import yaml as yaml_lib
+
+        headers_req = self._get_headers()
+        conn_ref_id = None
+        conn_ref_logical_name = None
+
+        # For connector tools, check if we need to clean up the connection reference
+        if cleanup_connection_ref:
+            try:
+                tool = self.get(f"botcomponents({component_id})")
+                schema_name = tool.get("schemaname", "") or ""
+                data = tool.get("data", "") or ""
+
+                # Check if this is a connector tool
+                if ".action." in schema_name and data:
+                    parsed_data = yaml_lib.safe_load(data) or {}
+                    actions = parsed_data.get("actions") or []
+                    if actions:
+                        action = actions[0]
+                        conn_ref_logical_name = action.get("connectionReferenceLogicalName", "")
+
+                        if conn_ref_logical_name:
+                            # Get the connection reference ID
+                            check_url = f"{self.api_url}/connectionreferences?$filter=connectionreferencelogicalname eq '{conn_ref_logical_name}'&$select=connectionreferenceid"
+                            check_response = self._http_client.get(check_url, headers=headers_req, timeout=60.0)
+                            check_response.raise_for_status()
+                            refs = check_response.json().get("value", [])
+                            if refs:
+                                conn_ref_id = refs[0].get("connectionreferenceid", "")
+            except Exception:
+                pass  # Don't fail tool removal if connection ref lookup fails
+
+        # Delete the tool
         self.delete(f"botcomponents({component_id})")
+
+        # Clean up connection reference if it exists and is no longer used
+        if conn_ref_id and conn_ref_logical_name:
+            try:
+                # Check if any other botcomponents still reference this connection reference
+                assoc_url = f"{self.api_url}/connectionreferences({conn_ref_id})/botcomponent_connectionreference?$select=botcomponentid&$top=1"
+                assoc_response = self._http_client.get(assoc_url, headers=headers_req, timeout=60.0)
+                assoc_response.raise_for_status()
+                remaining = assoc_response.json().get("value", [])
+
+                if not remaining:
+                    # No other tools using this connection reference, safe to delete
+                    self.delete(f"connectionreferences({conn_ref_id})")
+            except Exception:
+                pass  # Don't fail if cleanup fails - the tool was already removed
 
     def update_tool(
         self,
