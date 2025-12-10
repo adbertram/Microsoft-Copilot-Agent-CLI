@@ -2494,7 +2494,14 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
 
-    def _generate_api_properties(self, openapi_def: dict, icon_brand_color: str = "#007ee5") -> dict:
+    def _generate_api_properties(
+        self,
+        openapi_def: dict,
+        icon_brand_color: str = "#007ee5",
+        oauth_client_id: Optional[str] = None,
+        oauth_client_secret: Optional[str] = None,
+        oauth_redirect_url: Optional[str] = None
+    ) -> dict:
         """
         Generate apiProperties content from OpenAPI definition.
 
@@ -2504,6 +2511,8 @@ schemaName: {schema_name}
         Args:
             openapi_def: OpenAPI 2.0 definition
             icon_brand_color: Icon brand color in hex format
+            oauth_client_id: OAuth 2.0 Client ID (optional)
+            oauth_client_secret: OAuth 2.0 Client Secret (optional)
 
         Returns:
             dict: API properties structure
@@ -2523,29 +2532,38 @@ schemaName: {schema_name}
 
             if sec_type == "oauth2":
                 # OAuth2 configuration
-                connection_params["token"] = {
-                    "type": "oauthSetting",
-                    "oAuthSettings": {
-                        "identityProvider": "oauth2",
-                        "clientId": "",  # Must be set via UI
-                        "scopes": list(sec_def.get("scopes", {}).keys()),
-                        "redirectMode": "Global",
-                        "redirectUrl": "https://global.consent.azure-apim.net/redirect",
-                        "properties": {
-                            "IsFirstParty": "False"
+                # Use custom redirect URL if provided, otherwise use default
+                redirect_url = oauth_redirect_url or "https://global.consent.azure-apim.net/redirect"
+
+                oauth_settings = {
+                    "identityProvider": "oauth2",
+                    "clientId": oauth_client_id or "",
+                    "scopes": list(sec_def.get("scopes", {}).keys()),
+                    "redirectMode": "Global",
+                    "redirectUrl": redirect_url,
+                    "properties": {
+                        "IsFirstParty": "False"
+                    },
+                    "customParameters": {
+                        "authorizationUrl": {
+                            "value": sec_def.get("authorizationUrl", "")
                         },
-                        "customParameters": {
-                            "authorizationUrl": {
-                                "value": sec_def.get("authorizationUrl", "")
-                            },
-                            "tokenUrl": {
-                                "value": sec_def.get("tokenUrl", "")
-                            },
-                            "refreshUrl": {
-                                "value": sec_def.get("tokenUrl", "")  # Often same as tokenUrl
-                            }
+                        "tokenUrl": {
+                            "value": sec_def.get("tokenUrl", "")
+                        },
+                        "refreshUrl": {
+                            "value": sec_def.get("tokenUrl", "")  # Often same as tokenUrl
                         }
                     }
+                }
+
+                # Add client secret if provided
+                if oauth_client_secret:
+                    oauth_settings["clientSecret"] = oauth_client_secret
+
+                connection_params["token"] = {
+                    "type": "oauthSetting",
+                    "oAuthSettings": oauth_settings
                 }
             elif sec_type == "apiKey":
                 # API Key authentication
@@ -2602,6 +2620,9 @@ schemaName: {schema_name}
         description: Optional[str] = None,
         icon_brand_color: str = "#007ee5",
         environment_id: Optional[str] = None,
+        oauth_client_id: Optional[str] = None,
+        oauth_client_secret: Optional[str] = None,
+        oauth_redirect_url: Optional[str] = None,
     ) -> dict:
         """
         Create a custom connector in the current environment via Power Apps API.
@@ -2616,6 +2637,8 @@ schemaName: {schema_name}
             description: Connector description (optional)
             icon_brand_color: Icon brand color in hex format
             environment_id: Environment ID (optional, uses config if not provided)
+            oauth_client_id: OAuth 2.0 Client ID (required for OAuth connectors)
+            oauth_client_secret: OAuth 2.0 Client Secret (required for OAuth connectors)
 
         Returns:
             dict: Created connector details including connector_id
@@ -2640,7 +2663,13 @@ schemaName: {schema_name}
         connector_id = f"cr_{sanitized}"
 
         # Generate apiProperties from OpenAPI securityDefinitions
-        api_properties = self._generate_api_properties(openapi_definition, icon_brand_color)
+        api_properties = self._generate_api_properties(
+            openapi_definition,
+            icon_brand_color,
+            oauth_client_id,
+            oauth_client_secret,
+            oauth_redirect_url
+        )
 
         # Extract backend service URL from OpenAPI definition
         schemes = openapi_definition.get("schemes", ["https"])

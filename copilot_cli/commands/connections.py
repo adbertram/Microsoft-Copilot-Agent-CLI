@@ -383,6 +383,31 @@ def connections_create(
             import webbrowser
             import time
 
+            # Show OAuth redirect URL configuration requirement
+            typer.echo()
+            typer.echo("⚠️  OAuth Redirect URL Configuration Required")
+            typer.echo()
+            typer.echo("Power Platform will use this redirect URL for OAuth:")
+            typer.echo()
+            typer.echo(f"  https://global.consent.azure-apim.net/redirect/{connector_id}")
+            typer.echo()
+            typer.echo("You must register this EXACT URL in your OAuth app settings.")
+            typer.echo()
+            typer.echo("💡 Tip: If your OAuth provider supports wildcards, register:")
+            typer.echo("     https://global.consent.azure-apim.net/redirect/*")
+            typer.echo("     This will work for all connectors you create.")
+            typer.echo()
+            typer.echo("Have you registered the redirect URL? (y/N): ", nl=False)
+
+            response = input().strip().lower()
+            if response != 'y':
+                typer.echo()
+                typer.echo("Connection creation cancelled.")
+                typer.echo("Register the redirect URL in your OAuth app and try again.")
+                raise typer.Exit(0)
+
+            typer.echo()
+
             # OAuth flow - create connection and get consent link
             result = client.create_oauth_connection(
                 connector_id=connector_id,
