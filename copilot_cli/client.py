@@ -2,6 +2,8 @@
 import subprocess
 import json
 import re
+import random
+import string
 from typing import Optional, Any
 import httpx
 from .config import get_config
@@ -1940,12 +1942,22 @@ action:
         # connection_ref should be the connection GUID
         full_connection_ref = f"{bot_schema}.{connector_id}.{connection_ref}"
 
-        # Use operation_id as name if not provided
-        resolved_name = name or operation_id
+        # Get connector display name for naming
+        connector_display_name = connector_id.replace('shared_', '').title()
 
-        # Generate clean name for schema - UI uses .action. pattern
-        clean_name = re.sub(r'[^a-zA-Z0-9-]', '', resolved_name.replace(' ', '-'))
-        schema_name = f"{bot_schema}.action.{clean_name}"
+        # Get operation display name from swagger
+        operation_display_name = operation_details.get('summary', operation_id)
+
+        # UI default name format: "{Connector} - {OperationDisplayName}"
+        if name:
+            resolved_name = name
+        else:
+            resolved_name = f"{connector_display_name} - {operation_display_name}"
+
+        # Generate schema name matching UI pattern: {bot}.action.{Connector}-{OperationId}_{random}
+        # Use random 3-char suffix like UI does for uniqueness
+        random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=3))
+        schema_name = f"{bot_schema}.action.{connector_display_name}-{operation_id}_{random_suffix}"
 
         # Use swagger description if not provided by user
         resolved_description = description
