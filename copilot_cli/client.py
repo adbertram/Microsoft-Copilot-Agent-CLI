@@ -333,6 +333,39 @@ class DataverseClient:
         """
         return self.get(f"botcomponents({component_id})")
 
+    def get_tool(self, component_id: str) -> dict:
+        """
+        Get a specific tool by component ID.
+
+        Tools are stored as botcomponents with componenttype 9 (Topic V2).
+        This method fetches the component and validates it's a tool.
+
+        Args:
+            component_id: The tool component's unique identifier
+
+        Returns:
+            Tool component record with full details including data field
+
+        Raises:
+            Exception: If component is not found or is not a tool
+        """
+        component = self.get(f"botcomponents({component_id})")
+
+        # Validate this is actually a tool
+        schema_name = component.get("schemaname") or ""
+        data = component.get("data") or ""
+
+        is_tool = (
+            "TaskAction" in schema_name or
+            ".action." in schema_name or
+            "kind: TaskDialog" in data
+        )
+
+        if not is_tool:
+            raise Exception(f"Component {component_id} is not a tool (schema: {schema_name})")
+
+        return component
+
     def set_topic_state(self, component_id: str, enabled: bool) -> None:
         """
         Enable or disable a topic.

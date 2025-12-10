@@ -1930,6 +1930,182 @@ def tool_list(
         raise typer.Exit(exit_code)
 
 
+@tool_app.command("get")
+def tool_get(
+    component_id: str = typer.Argument(
+        ...,
+        help="The tool component's unique identifier (GUID)",
+    ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        "-r",
+        help="Show raw component data without parsing",
+    ),
+    yaml_output: bool = typer.Option(
+        False,
+        "--yaml",
+        "-y",
+        help="Show the tool's YAML definition",
+    ),
+):
+    """
+    Get details of a specific tool.
+
+    Shows comprehensive information about an agent tool including its
+    configuration, inputs, outputs, and YAML definition.
+
+    Examples:
+        copilot agent tool get <component-id>
+        copilot agent tool get <component-id> --yaml
+        copilot agent tool get <component-id> --raw
+    """
+    import yaml as yaml_lib
+
+    try:
+        client = get_client()
+        tool = client.get_tool(component_id)
+
+        if raw:
+            print_json(tool)
+            return
+
+        if yaml_output:
+            data = tool.get("data", "")
+            if data:
+                typer.echo(data)
+            else:
+                typer.echo("No YAML definition found for this tool.")
+            return
+
+        # Parse the tool data for formatted output
+        schema_name = tool.get("schemaname", "") or ""
+        data = tool.get("data", "") or ""
+        category = get_tool_category(schema_name, data)
+
+        # Extract details from YAML data
+        parsed_data = {}
+        if data:
+            try:
+                parsed_data = yaml_lib.safe_load(data) or {}
+            except Exception:
+                pass
+
+        # Build display output
+        typer.echo(f"Tool: {tool.get('name', 'Unknown')}")
+        typer.echo(f"Component ID: {tool.get('botcomponentid', '')}")
+        typer.echo(f"Category: {category}")
+        typer.echo(f"Schema Name: {schema_name}")
+        typer.echo(f"Status: {tool.get('statecode@OData.Community.Display.V1.FormattedValue', 'Active')}")
+        typer.echo("")
+
+        # Display parsed YAML fields
+        if parsed_data:
+            if parsed_data.get("modelDisplayName"):
+                typer.echo(f"Display Name: {parsed_data.get('modelDisplayName')}")
+            if parsed_data.get("modelDescription"):
+                typer.echo(f"Description: {parsed_data.get('modelDescription')}")
+
+            # Show availability settings
+            availability = parsed_data.get("isAvailableForAgentInvocation")
+            if availability is not None:
+                typer.echo(f"Available for Agent: {availability}")
+
+            # Show confirmation settings
+            user_confirm = parsed_data.get("requiresUserConfirmation")
+            if user_confirm is not None:
+                typer.echo(f"Requires Confirmation: {user_confirm}")
+            confirm_msg = parsed_data.get("userConfirmationText")
+            if confirm_msg:
+                typer.echo(f"Confirmation Message: {confirm_msg}")
+
+            typer.echo("")
+
+            # Show inputs
+            inputs = parsed_data.get("inputs") or []
+            if inputs:
+                typer.echo("Inputs:")
+                for inp in inputs:
+                    inp_name = inp.get("name", "unknown")
+                    inp_type = inp.get("dataType", "unknown")
+                    inp_required = inp.get("isRequired", False)
+                    inp_desc = inp.get("description", "")
+                    default_val = inp.get("defaultValue")
+                    req_marker = "*" if inp_required else ""
+                    typer.echo(f"  {inp_name}{req_marker} ({inp_type})")
+                    if inp_desc:
+                        typer.echo(f"    Description: {inp_desc}")
+                    if default_val is not None:
+                        typer.echo(f"    Default: {default_val}")
+                typer.echo("")
+
+            # Show outputs
+            outputs = parsed_data.get("outputs") or []
+            if outputs:
+                typer.echo("Outputs:")
+                for out in outputs:
+                    out_name = out.get("name", "unknown")
+                    out_type = out.get("dataType", "unknown")
+                    out_desc = out.get("description", "")
+                    typer.echo(f"  {out_name} ({out_type})")
+                    if out_desc:
+                        typer.echo(f"    Description: {out_desc}")
+                typer.echo("")
+
+            # Show action-specific details based on category
+            actions = parsed_data.get("actions") or []
+            if actions and len(actions) > 0:
+                action = actions[0]  # Usually there's one main action
+                action_kind = action.get("kind", "")
+                typer.echo(f"Action Type: {action_kind}")
+
+                # Connector-specific details
+                if "Connector" in action_kind:
+                    connector_id = action.get("connectorId", "")
+                    operation_id = action.get("operationId", "")
+                    conn_ref = action.get("connectionReferenceLogicalName", "")
+                    if connector_id:
+                        typer.echo(f"Connector: {connector_id}")
+                    if operation_id:
+                        typer.echo(f"Operation: {operation_id}")
+                    if conn_ref:
+                        typer.echo(f"Connection Reference: {conn_ref}")
+
+                # Agent-specific details
+                elif "ConnectedAgent" in action_kind:
+                    target_id = action.get("agentId", "")
+                    if target_id:
+                        typer.echo(f"Target Agent: {target_id}")
+
+                # Flow-specific details
+                elif "Flow" in action_kind:
+                    flow_id = action.get("flowId", "")
+                    if flow_id:
+                        typer.echo(f"Flow ID: {flow_id}")
+
+                # HTTP-specific details
+                elif "Http" in action_kind:
+                    url = action.get("url", "")
+                    method = action.get("method", "")
+                    if url:
+                        typer.echo(f"URL: {url}")
+                    if method:
+                        typer.echo(f"Method: {method}")
+
+        # Show timestamps
+        typer.echo("")
+        created = tool.get("createdon", "")
+        modified = tool.get("modifiedon", "")
+        if created:
+            typer.echo(f"Created: {created}")
+        if modified:
+            typer.echo(f"Modified: {modified}")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
 @tool_app.command("add")
 def tool_add(
     agent_id: str = typer.Option(
