@@ -1,9 +1,12 @@
 """Connector commands for listing available Power Platform connectors."""
 import typer
+import json
+import yaml
+from pathlib import Path
 from typing import Optional
 
 from ..client import get_client
-from ..output import print_json, print_table, handle_api_error
+from ..output import print_json, print_table, handle_api_error, print_success
 
 
 app = typer.Typer(help="List and inspect Power Platform connectors")
@@ -51,6 +54,152 @@ def format_connector_for_display(connector: dict) -> dict:
         "tier": props.get("tier") or "N/A",
         "description": description,
     }
+
+
+def generate_api_properties(openapi_def: dict, icon_brand_color: str = "#007ee5") -> dict:
+    """
+    Generate apiProperties.json content from OpenAPI definition.
+
+    Extracts authentication configuration from securityDefinitions and creates
+    the properties structure needed by Power Platform custom connectors.
+
+    Args:
+        openapi_def: OpenAPI 2.0 definition
+        icon_brand_color: Icon brand color in hex format
+
+    Returns:
+        dict: API properties structure
+    """
+    properties = {
+        "iconBrandColor": icon_brand_color,
+        "capabilities": [],
+        "policyTemplateInstances": []
+    }
+
+    # Extract connection parameters from securityDefinitions
+    security_defs = openapi_def.get("securityDefinitions", {})
+    connection_params = {}
+
+    for sec_name, sec_def in security_defs.items():
+        sec_type = sec_def.get("type", "")
+
+        if sec_type == "oauth2":
+            # OAuth2 configuration
+            connection_params["token"] = {
+                "type": "oauthSetting",
+                "oAuthSettings": {
+                    "identityProvider": "oauth2",
+                    "clientId": "",  # Must be set via UI
+                    "scopes": list(sec_def.get("scopes", {}).keys()),
+                    "redirectMode": "Global",
+                    "redirectUrl": "https://global.consent.azure-apim.net/redirect",
+                    "properties": {
+                        "IsFirstParty": "False"
+                    },
+                    "customParameters": {
+                        "authorizationUrl": {
+                            "value": sec_def.get("authorizationUrl", "")
+                        },
+                        "tokenUrl": {
+                            "value": sec_def.get("tokenUrl", "")
+                        },
+                        "refreshUrl": {
+                            "value": sec_def.get("tokenUrl", "")  # Often same as tokenUrl
+                        }
+                    }
+                }
+            }
+        elif sec_type == "apiKey":
+            # API Key authentication
+            param_name = sec_def.get("name", "api_key")
+            in_location = sec_def.get("in", "header")
+
+            connection_params[param_name] = {
+                "type": "securestring",
+                "uiDefinition": {
+                    "displayName": f"API Key ({param_name})",
+                    "description": f"The API Key for authentication (sent in {in_location})",
+                    "tooltip": "Provide your API Key",
+                    "constraints": {
+                        "required": "true",
+                        "clearText": False
+                    }
+                }
+            }
+        elif sec_type == "basic":
+            # Basic authentication
+            connection_params["username"] = {
+                "type": "string",
+                "uiDefinition": {
+                    "displayName": "Username",
+                    "description": "Username for basic authentication",
+                    "tooltip": "Provide your username",
+                    "constraints": {
+                        "required": "true"
+                    }
+                }
+            }
+            connection_params["password"] = {
+                "type": "securestring",
+                "uiDefinition": {
+                    "displayName": "Password",
+                    "description": "Password for basic authentication",
+                    "tooltip": "Provide your password",
+                    "constraints": {
+                        "required": "true",
+                        "clearText": False
+                    }
+                }
+            }
+
+    if connection_params:
+        properties["connectionParameters"] = connection_params
+
+    return {"properties": properties}
+
+
+def validate_openapi_definition(openapi_def: dict) -> tuple[bool, str]:
+    """
+    Validate that the OpenAPI definition is in the correct format.
+
+    Args:
+        openapi_def: Parsed OpenAPI definition dict
+
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    # Check for OpenAPI 2.0 (Swagger)
+    swagger_version = openapi_def.get("swagger")
+    if not swagger_version or not swagger_version.startswith("2."):
+        openapi_version = openapi_def.get("openapi", "")
+        if openapi_version.startswith("3."):
+            return False, (
+                "OpenAPI 3.0 is not supported by Power Platform. "
+                "Please convert to OpenAPI 2.0 (Swagger) format. "
+                "You can use tools like swagger-cli or API Transformer for conversion."
+            )
+        return False, "OpenAPI definition must be in OpenAPI 2.0 (Swagger) format."
+
+    # Check required fields
+    required_fields = ["swagger", "info", "host", "basePath", "schemes"]
+    missing = [f for f in required_fields if f not in openapi_def]
+    if missing:
+        return False, f"Missing required fields: {', '.join(missing)}"
+
+    # Check info section
+    info = openapi_def.get("info", {})
+    if not info.get("title"):
+        return False, "info.title is required"
+    if not info.get("version"):
+        return False, "info.version is required"
+
+    # Check size (must be < 1MB)
+    json_str = json.dumps(openapi_def)
+    size_mb = len(json_str.encode('utf-8')) / (1024 * 1024)
+    if size_mb >= 1.0:
+        return False, f"OpenAPI definition is too large ({size_mb:.2f} MB). Must be less than 1 MB."
+
+    return True, ""
 
 
 @app.command("list")
@@ -323,6 +472,81 @@ def connectors_get(
         else:
             # JSON format - just operations list
             print_json(operations)
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@app.command("create")
+def connectors_create(
+    name: str = typer.Option(..., "--name", "-n", help="Display name for the connector"),
+    swagger_file: str = typer.Option(..., "--swagger-file", "-f", help="Path to OpenAPI 2.0 (Swagger) definition file"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Connector description"),
+    icon_brand_color: Optional[str] = typer.Option("#007ee5", "--icon-brand-color", help="Icon brand color (hex format)"),
+    environment: Optional[str] = typer.Option(None, "--environment", "--env", help="Environment ID (defaults to configured environment)"),
+):
+    """
+    Create a new custom connector from an OpenAPI 2.0 (Swagger) definition.
+
+    The OpenAPI definition must be in OpenAPI 2.0 format (not 3.0).
+    Authentication secrets must be configured via the Power Apps UI after creation.
+
+    Examples:
+      copilot connectors create --name "My API" --swagger-file ./api.json
+      copilot connectors create -n "My API" -f ./api.swagger.json -d "My custom API connector"
+      copilot connectors create -n "My API" -f ./api.json --env Default-abc123
+    """
+    try:
+        # Read and parse OpenAPI file
+        swagger_path = Path(swagger_file)
+        if not swagger_path.exists():
+            typer.echo(f"Error: File not found: {swagger_file}", err=True)
+            raise typer.Exit(1)
+
+        try:
+            file_content = swagger_path.read_text()
+
+            # Try JSON first, then YAML
+            try:
+                openapi_def = json.loads(file_content)
+            except json.JSONDecodeError:
+                try:
+                    openapi_def = yaml.safe_load(file_content)
+                except yaml.YAMLError as yaml_err:
+                    typer.echo(f"Error: Invalid JSON/YAML format: {yaml_err}", err=True)
+                    raise typer.Exit(1)
+        except Exception as e:
+            typer.echo(f"Error reading file: {e}", err=True)
+            raise typer.Exit(1)
+
+        # Validate OpenAPI definition
+        is_valid, error_msg = validate_openapi_definition(openapi_def)
+        if not is_valid:
+            typer.echo(f"Error: {error_msg}", err=True)
+            raise typer.Exit(1)
+
+        # Create connector
+        client = get_client()
+        result = client.create_custom_connector(
+            name=name,
+            openapi_definition=openapi_def,
+            description=description,
+            icon_brand_color=icon_brand_color or "#007ee5",
+            environment_id=environment,
+        )
+
+        connector_id = result["connector_id"]
+        environment_id = result["environment_id"]
+
+        print_success(f"Custom connector '{name}' created successfully!")
+        typer.echo(f"Connector ID: {connector_id}")
+        typer.echo(f"Environment: {environment_id}")
+        typer.echo()
+        typer.echo("⚠️  Next Steps:")
+        typer.echo("1. Configure authentication secrets via Power Apps UI (https://make.powerapps.com)")
+        typer.echo(f"2. Test the connector using 'copilot connectors get {connector_id}'")
+        typer.echo(f"3. Create a connection using 'copilot connections create --connector-id {connector_id}'")
 
     except Exception as e:
         exit_code = handle_api_error(e)

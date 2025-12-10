@@ -2494,6 +2494,227 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
 
+    def _generate_api_properties(self, openapi_def: dict, icon_brand_color: str = "#007ee5") -> dict:
+        """
+        Generate apiProperties content from OpenAPI definition.
+
+        Extracts authentication configuration from securityDefinitions and creates
+        the properties structure needed by Power Platform custom connectors.
+
+        Args:
+            openapi_def: OpenAPI 2.0 definition
+            icon_brand_color: Icon brand color in hex format
+
+        Returns:
+            dict: API properties structure
+        """
+        properties = {
+            "iconBrandColor": icon_brand_color,
+            "capabilities": [],
+            "policyTemplateInstances": []
+        }
+
+        # Extract connection parameters from securityDefinitions
+        security_defs = openapi_def.get("securityDefinitions", {})
+        connection_params = {}
+
+        for sec_name, sec_def in security_defs.items():
+            sec_type = sec_def.get("type", "")
+
+            if sec_type == "oauth2":
+                # OAuth2 configuration
+                connection_params["token"] = {
+                    "type": "oauthSetting",
+                    "oAuthSettings": {
+                        "identityProvider": "oauth2",
+                        "clientId": "",  # Must be set via UI
+                        "scopes": list(sec_def.get("scopes", {}).keys()),
+                        "redirectMode": "Global",
+                        "redirectUrl": "https://global.consent.azure-apim.net/redirect",
+                        "properties": {
+                            "IsFirstParty": "False"
+                        },
+                        "customParameters": {
+                            "authorizationUrl": {
+                                "value": sec_def.get("authorizationUrl", "")
+                            },
+                            "tokenUrl": {
+                                "value": sec_def.get("tokenUrl", "")
+                            },
+                            "refreshUrl": {
+                                "value": sec_def.get("tokenUrl", "")  # Often same as tokenUrl
+                            }
+                        }
+                    }
+                }
+            elif sec_type == "apiKey":
+                # API Key authentication
+                param_name = sec_def.get("name", "api_key")
+                in_location = sec_def.get("in", "header")
+
+                connection_params[param_name] = {
+                    "type": "securestring",
+                    "uiDefinition": {
+                        "displayName": f"API Key ({param_name})",
+                        "description": f"The API Key for authentication (sent in {in_location})",
+                        "tooltip": "Provide your API Key",
+                        "constraints": {
+                            "required": "true",
+                            "clearText": False
+                        }
+                    }
+                }
+            elif sec_type == "basic":
+                # Basic authentication
+                connection_params["username"] = {
+                    "type": "string",
+                    "uiDefinition": {
+                        "displayName": "Username",
+                        "description": "Username for basic authentication",
+                        "tooltip": "Provide your username",
+                        "constraints": {
+                            "required": "true"
+                        }
+                    }
+                }
+                connection_params["password"] = {
+                    "type": "securestring",
+                    "uiDefinition": {
+                        "displayName": "Password",
+                        "description": "Password for basic authentication",
+                        "tooltip": "Provide your password",
+                        "constraints": {
+                            "required": "true",
+                            "clearText": False
+                        }
+                    }
+                }
+
+        if connection_params:
+            properties["connectionParameters"] = connection_params
+
+        return {"properties": properties}
+
+    def create_custom_connector(
+        self,
+        name: str,
+        openapi_definition: dict,
+        description: Optional[str] = None,
+        icon_brand_color: str = "#007ee5",
+        environment_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Create a custom connector in the current environment via Power Apps API.
+
+        This uses the Power Apps Management API (same as list/get connectors and
+        connections) to ensure full connector registration, following the pattern
+        used by Microsoft's official paconn CLI tool.
+
+        Args:
+            name: Display name for the connector
+            openapi_definition: OpenAPI 2.0 definition (dict, not stringified)
+            description: Connector description (optional)
+            icon_brand_color: Icon brand color in hex format
+            environment_id: Environment ID (optional, uses config if not provided)
+
+        Returns:
+            dict: Created connector details including connector_id
+
+        Raises:
+            ClientError: If creation fails
+        """
+        import re
+
+        # Get environment ID
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or provide --environment option."
+                )
+
+        # Generate connector ID from name
+        sanitized = re.sub(r'[^a-z0-9_]', '_', name.lower())
+        connector_id = f"cr_{sanitized}"
+
+        # Generate apiProperties from OpenAPI securityDefinitions
+        api_properties = self._generate_api_properties(openapi_definition, icon_brand_color)
+
+        # Extract backend service URL from OpenAPI definition
+        schemes = openapi_definition.get("schemes", ["https"])
+        scheme = schemes[0] if schemes else "https"
+        host = openapi_definition.get("host", "")
+        base_path = openapi_definition.get("basePath", "")
+        backend_url = f"{scheme}://{host}{base_path}"
+
+        # Build payload following Power Apps API format
+        # Use OpenApiDefinition (not swagger) and merge apiProperties
+        payload = {
+            "properties": {
+                "displayName": name,
+                "OpenApiDefinition": openapi_definition,  # Use OpenApiDefinition, not swagger
+                "iconBrandColor": icon_brand_color,
+                "backendService": {
+                    "serviceUrl": backend_url
+                },
+                "environment": {
+                    "id": f"/providers/Microsoft.PowerApps/environments/{environment_id}",
+                    "name": environment_id
+                },
+                # Merge connection parameters and other properties from apiProperties
+                **api_properties.get("properties", {})
+            }
+        }
+
+        if description:
+            payload["properties"]["description"] = description
+
+        # Get Power Apps token
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        # Build endpoint - POST to collection, not to specific ID
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis"
+            f"?api-version=2016-11-01"
+            f"&$filter=environment eq '{environment_id}'"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            # Try POST for creation (Power Platform may require POST for new, PUT for update)
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+            result = response.json()
+
+            # Extract actual connector ID from API response
+            actual_connector_id = result.get("name", connector_id)
+
+            return {
+                "connector_id": actual_connector_id,
+                "display_name": name,
+                "description": description,
+                "environment_id": environment_id,
+                "result": result,
+            }
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_json = e.response.json()
+                if "error" in error_json:
+                    error_detail = error_json["error"].get("message", str(error_json))
+                else:
+                    error_detail = str(error_json)
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to create connector: {error_detail}")
+
     # =========================================================================
     # Flow Methods
     # =========================================================================
