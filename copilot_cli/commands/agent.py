@@ -14,6 +14,7 @@ from ..output import (
     print_json,
     print_table,
     print_success,
+    print_warning,
     handle_api_error,
     format_bot_for_display,
     format_transcript_content,
@@ -21,6 +22,27 @@ from ..output import (
 )
 
 app = typer.Typer(help="Manage Copilot Studio agents")
+
+
+# Authentication mode mapping
+AUTH_MODE_MAP = {
+    "none": 1,
+    "integrated": 2,
+    "custom": 3,
+}
+
+AUTH_TRIGGER_MAP = {
+    "as-needed": 0,
+    "always": 1,
+}
+
+# Warning message for connector tool compatibility
+CONNECTOR_AUTH_WARNING = (
+    "Using auth-mode 'none' or 'custom' may cause connector tools to fail with error: "
+    '"The Topic with Id unknown was not found in the definition. Please check that the '
+    'Topic is present and that the Id is correct. Error code: SignInTopicNeededButNotFound". '
+    "Use auth-mode 'integrated' to prevent this issue when adding connector tools."
+)
 
 
 @app.command("list")
@@ -213,6 +235,16 @@ def update_agent(
         "--orchestration/--no-orchestration",
         help="Enable/disable generative AI orchestration",
     ),
+    auth_mode: Optional[str] = typer.Option(
+        None,
+        "--auth-mode",
+        help="Authentication mode: none, integrated, or custom",
+    ),
+    auth_trigger: Optional[str] = typer.Option(
+        None,
+        "--auth-trigger",
+        help="Authentication trigger: as-needed or always",
+    ),
 ):
     """
     Update an existing Copilot Studio agent.
@@ -225,8 +257,31 @@ def update_agent(
         copilot agent update <agent-id> --instructions "New system prompt"
         copilot agent update <agent-id> --instructions-file ./prompt.txt
         copilot agent update <agent-id> --no-orchestration
+        copilot agent update <agent-id> --auth-mode integrated --auth-trigger always
     """
     try:
+        # Validate and convert auth_mode if provided
+        auth_mode_int = None
+        if auth_mode is not None:
+            auth_mode_lower = auth_mode.lower()
+            if auth_mode_lower not in AUTH_MODE_MAP:
+                typer.echo(f"Error: Invalid auth-mode '{auth_mode}'. Valid options: none, integrated, custom", err=True)
+                raise typer.Exit(1)
+            auth_mode_int = AUTH_MODE_MAP[auth_mode_lower]
+
+            # Warn about connector tool compatibility for non-integrated auth modes
+            if auth_mode_lower in ("none", "custom"):
+                print_warning(CONNECTOR_AUTH_WARNING)
+
+        # Validate and convert auth_trigger if provided
+        auth_trigger_int = None
+        if auth_trigger is not None:
+            auth_trigger_lower = auth_trigger.lower()
+            if auth_trigger_lower not in AUTH_TRIGGER_MAP:
+                typer.echo(f"Error: Invalid auth-trigger '{auth_trigger}'. Valid options: as-needed, always", err=True)
+                raise typer.Exit(1)
+            auth_trigger_int = AUTH_TRIGGER_MAP[auth_trigger_lower]
+
         # Handle instructions from file if provided
         agent_instructions = instructions
         if instructions_file:
@@ -246,6 +301,7 @@ def update_agent(
         current_bot = client.get_bot(agent_id)
         agent_name = name if name else current_bot.get("name", agent_id)
 
+        # Update bot settings
         client.update_bot(
             bot_id=agent_id,
             name=name,
@@ -253,6 +309,14 @@ def update_agent(
             description=description,
             orchestration=orchestration,
         )
+
+        # Update auth settings if provided
+        if auth_mode_int is not None or auth_trigger_int is not None:
+            client.update_bot_auth(
+                bot_id=agent_id,
+                mode=auth_mode_int,
+                trigger=auth_trigger_int,
+            )
 
         print_success(f"Agent '{agent_name}' updated successfully.")
     except Exception as e:
@@ -296,6 +360,16 @@ def create_agent(
         "--orchestration/--no-orchestration",
         help="Enable/disable generative AI orchestration (default: enabled)",
     ),
+    auth_mode: str = typer.Option(
+        "integrated",
+        "--auth-mode",
+        help="Authentication mode: none, integrated (default), or custom",
+    ),
+    auth_trigger: str = typer.Option(
+        "always",
+        "--auth-trigger",
+        help="Authentication trigger: as-needed or always (default)",
+    ),
 ):
     """
     Create a new Copilot Studio agent.
@@ -308,8 +382,27 @@ def create_agent(
         copilot agent create --name "My Agent" --instructions "You are a helpful assistant"
         copilot agent create --name "My Agent" --instructions-file ./prompt.txt
         copilot agent create --name "My Agent" --no-orchestration
+        copilot agent create --name "My Agent" --auth-mode none --auth-trigger as-needed
     """
     try:
+        # Validate and convert auth_mode
+        auth_mode_lower = auth_mode.lower()
+        if auth_mode_lower not in AUTH_MODE_MAP:
+            typer.echo(f"Error: Invalid auth-mode '{auth_mode}'. Valid options: none, integrated, custom", err=True)
+            raise typer.Exit(1)
+        auth_mode_int = AUTH_MODE_MAP[auth_mode_lower]
+
+        # Validate and convert auth_trigger
+        auth_trigger_lower = auth_trigger.lower()
+        if auth_trigger_lower not in AUTH_TRIGGER_MAP:
+            typer.echo(f"Error: Invalid auth-trigger '{auth_trigger}'. Valid options: as-needed, always", err=True)
+            raise typer.Exit(1)
+        auth_trigger_int = AUTH_TRIGGER_MAP[auth_trigger_lower]
+
+        # Warn about connector tool compatibility for non-integrated auth modes
+        if auth_mode_lower in ("none", "custom"):
+            print_warning(CONNECTOR_AUTH_WARNING)
+
         # Handle instructions from file if provided
         agent_instructions = instructions
         if instructions_file:
@@ -330,6 +423,8 @@ def create_agent(
             instructions=agent_instructions,
             description=description,
             orchestration=orchestration,
+            auth_mode=auth_mode_int,
+            auth_trigger=auth_trigger_int,
         )
 
         print_success(f"Agent '{name}' created successfully.")

@@ -715,6 +715,8 @@ beginDialog:
         instructions: Optional[str] = None,
         description: Optional[str] = None,
         orchestration: bool = True,
+        auth_mode: int = 2,
+        auth_trigger: int = 1,
     ) -> dict:
         """
         Create a new Copilot Studio agent (bot).
@@ -726,6 +728,8 @@ beginDialog:
             instructions: Optional system instructions for the agent
             description: Optional description for the agent
             orchestration: Enable generative AI orchestration (default: True)
+            auth_mode: Authentication mode (1=None, 2=Integrated, 3=Custom Azure AD)
+            auth_trigger: Authentication trigger (0=As Needed, 1=Always)
 
         Returns:
             Created bot record
@@ -786,8 +790,8 @@ beginDialog:
             "language": language,
             "runtimeprovider": 0,  # Power Virtual Agents
             "accesscontrolpolicy": 1,  # Copilot readers
-            "authenticationmode": 2,  # Integrated
-            "authenticationtrigger": 1,  # Always
+            "authenticationmode": auth_mode,
+            "authenticationtrigger": auth_trigger,
             "template": "default-2.1.0",
             "configuration": json.dumps(config, indent=2),
         }

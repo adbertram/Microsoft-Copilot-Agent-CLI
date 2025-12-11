@@ -64,6 +64,19 @@ def print_error(message: str):
     print(f"Error: {message}", file=sys.stderr)
 
 
+def print_warning(message: str):
+    """
+    Print warning message to stderr in yellow.
+
+    Args:
+        message: Warning message to print
+    """
+    # ANSI escape code for yellow text
+    yellow = "\033[93m"
+    reset = "\033[0m"
+    print(f"{yellow}Warning: {message}{reset}", file=sys.stderr)
+
+
 def print_success(message: str):
     """
     Print success message to stderr (keeps stdout clean for JSON).
