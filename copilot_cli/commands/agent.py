@@ -2359,10 +2359,11 @@ def tool_add(
         "--body",
         help="Request body template (for http tools)",
     ),
-    connection_mode: str = typer.Option(
-        "Maker",
-        "--connection-mode",
-        help="Connection mode for connector tools: 'Invoker' (user auth) or 'Maker' (maker auth)",
+    credential: str = typer.Option(
+        "maker-provided",
+        "--credential",
+        "-C",
+        help="Credential mode for connector tools: 'maker-provided' (use maker's auth) or 'end-user' (prompt user to auth)",
     ),
     force: bool = typer.Option(
         False,
@@ -2388,10 +2389,19 @@ def tool_add(
       - http: URL
       - agent: Target agent GUID
 
+    Credential Modes (--credential):
+      - maker-provided: Uses the maker's authenticated connection (default)
+      - end-user: Prompts the user to authenticate when using the tool
+
     Examples:
-        # Connector tool (requires connection reference ID)
+        # Connector tool with maker's credentials (default)
         copilot agent tool add -a <agent-id> --toolType connector \\
             --id "shared_asana:GetTask" --connection-reference-id <conn-ref-id> --name "Get Task"
+
+        # Connector tool requiring end-user authentication
+        copilot agent tool add -a <agent-id> --toolType connector \\
+            --id "shared_asana:CreateTask" --connection-reference-id <conn-ref-id> \\
+            --credential end-user --name "Create Task"
 
         # Prompt tool
         copilot agent tool add -a <agent-id> --toolType prompt \\
@@ -2417,11 +2427,19 @@ def tool_add(
         typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
         raise typer.Exit(1)
 
-    # Validate connection mode
-    valid_modes = ['Invoker', 'Maker']
-    if connection_mode not in valid_modes:
-        typer.echo(f"Error: Invalid connection mode '{connection_mode}'. Must be one of: {', '.join(valid_modes)}", err=True)
+    # Validate and map credential mode to internal connection mode
+    credential_map = {
+        'maker-provided': 'Maker',
+        'end-user': 'Invoker',
+        # Also accept legacy values for backwards compatibility
+        'Maker': 'Maker',
+        'Invoker': 'Invoker',
+    }
+    credential_lower = credential.lower() if credential.lower() in ['maker-provided', 'end-user'] else credential
+    if credential_lower not in credential_map and credential not in credential_map:
+        typer.echo(f"Error: Invalid credential mode '{credential}'. Must be one of: maker-provided, end-user", err=True)
         raise typer.Exit(1)
+    connection_mode = credential_map.get(credential_lower) or credential_map.get(credential)
 
     # Parse JSON parameters
     inputs_dict = None
@@ -2555,6 +2573,12 @@ def tool_update(
         "-i",
         help='Input default values as JSON, e.g., \'{"workspace": "123", "projects": "456"}\'',
     ),
+    credential: Optional[str] = typer.Option(
+        None,
+        "--credential",
+        "-C",
+        help="Credential mode for connector tools: 'maker-provided' (use maker's auth) or 'end-user' (prompt user to auth)",
+    ),
 ):
     """
     Update a tool's attributes.
@@ -2575,6 +2599,9 @@ def tool_update(
     Input Defaults:
       --inputs         Set default values for tool inputs as JSON
 
+    Credential Mode (connector tools only):
+      --credential     'maker-provided' (use maker's auth) or 'end-user' (prompt user)
+
     Examples:
         # Update name and description
         copilot agent tool update <component-id> --name "New Tool Name"
@@ -2592,13 +2619,33 @@ def tool_update(
         # Set input default values
         copilot agent tool update <component-id> --inputs '{"workspace": "123456", "projects": "789012"}'
 
+        # Change credential mode (connector tools)
+        copilot agent tool update <component-id> --credential maker-provided  # Use maker's credentials
+        copilot agent tool update <component-id> --credential end-user        # Prompt user to auth
+
         # Combined update
         copilot agent tool update <component-id> -n "Name" -d "Description" --available --confirm
     """
-    if not any([name, description, availability is not None, confirmation is not None, confirmation_message, inputs]):
+    if not any([name, description, availability is not None, confirmation is not None, confirmation_message, inputs, credential]):
         typer.echo("Error: At least one option must be provided.", err=True)
-        typer.echo("Options: --name, --description, --available/--not-available, --confirm/--no-confirm, --confirm-message, --inputs")
+        typer.echo("Options: --name, --description, --available/--not-available, --confirm/--no-confirm, --confirm-message, --inputs, --credential")
         raise typer.Exit(1)
+
+    # Validate and map credential mode to internal connection mode
+    connection_mode = None
+    if credential:
+        credential_map = {
+            'maker-provided': 'Maker',
+            'end-user': 'Invoker',
+            # Also accept legacy values for backwards compatibility
+            'Maker': 'Maker',
+            'Invoker': 'Invoker',
+        }
+        credential_lower = credential.lower() if credential.lower() in ['maker-provided', 'end-user'] else credential
+        if credential_lower not in credential_map and credential not in credential_map:
+            typer.echo(f"Error: Invalid credential mode '{credential}'. Must be one of: maker-provided, end-user", err=True)
+            raise typer.Exit(1)
+        connection_mode = credential_map.get(credential_lower) or credential_map.get(credential)
 
     # Validate description length
     if description and len(description) > 1024:
@@ -2627,6 +2674,7 @@ def tool_update(
             confirmation=confirmation,
             confirmation_message=confirmation_message,
             inputs=inputs_dict,
+            connection_mode=connection_mode,
         )
         print_success(f"Tool updated successfully!")
         typer.echo(f"Name: {result.get('name', 'N/A')}")
@@ -2648,6 +2696,9 @@ def tool_update(
                 typer.echo(f"User Confirmation: Disabled")
         if inputs_dict:
             typer.echo(f"Input defaults updated: {', '.join(inputs_dict.keys())}")
+        if connection_mode:
+            mode_display = "Maker-provided" if connection_mode == "Maker" else "End-user"
+            typer.echo(f"Credential mode: {mode_display}")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)

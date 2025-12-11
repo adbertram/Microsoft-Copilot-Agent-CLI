@@ -1598,6 +1598,7 @@ outputType: {{}}"""
         confirmation: Optional[bool] = None,
         confirmation_message: Optional[str] = None,
         inputs: Optional[dict] = None,
+        connection_mode: Optional[str] = None,
     ) -> dict:
         """
         Update a tool's attributes.
@@ -1610,6 +1611,7 @@ outputType: {{}}"""
             confirmation: Whether to ask user for confirmation before running
             confirmation_message: Custom message to show when asking for confirmation
             inputs: Input parameter defaults as dict, e.g., {"workspace": "123", "project": "456"}
+            connection_mode: Connection mode for connector tools ('Maker' or 'Invoker')
 
         Returns:
             The updated component data
@@ -1690,6 +1692,20 @@ outputType: {{}}"""
         # Handle input default values
         if inputs is not None and data:
             data = self._update_tool_inputs(data, inputs)
+
+        # Handle connection mode for connector tools
+        if connection_mode is not None and data:
+            # Check if this is a connector tool (has connectionProperties)
+            if 'connectionProperties:' in data:
+                # Update the mode within connectionProperties
+                pattern = r'(connectionProperties:\s*\n\s*mode:)\s*\w+'
+                replacement = f'\\1 {connection_mode}'
+                data = re.sub(pattern, replacement, data)
+            elif 'InvokeConnectorTaskAction' in data:
+                # Has connector action but no connectionProperties - add it after connectionReference
+                pattern = r'(connectionReference:[^\n]*\n)'
+                replacement = f'\\1  connectionProperties:\n    mode: {connection_mode}\n'
+                data = re.sub(pattern, replacement, data)
 
         # Check if YAML data was modified
         if data != component.get("data", ""):
