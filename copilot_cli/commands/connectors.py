@@ -512,6 +512,8 @@ def connectors_create(
     oauth_client_id: Optional[str] = typer.Option(None, "--oauth-client-id", help="OAuth 2.0 Client ID (required for OAuth connectors)"),
     oauth_client_secret: Optional[str] = typer.Option(None, "--oauth-client-secret", help="OAuth 2.0 Client Secret (required for OAuth connectors)"),
     oauth_redirect_url: Optional[str] = typer.Option(None, "--oauth-redirect-url", help="Custom OAuth redirect URL (overrides default Power Platform redirect URL)"),
+    script: Optional[str] = typer.Option(None, "--script", "-x", help="Path to C# script file (.csx) for custom code transformations"),
+    script_operations: Optional[str] = typer.Option(None, "--script-operations", help="Comma-separated list of operationIds that use the script (defaults to all operations)"),
 ):
     """
     Create a new custom connector from an OpenAPI 2.0 (Swagger) definition.
@@ -520,6 +522,10 @@ def connectors_create(
 
     For OAuth connectors, provide --oauth-client-id and --oauth-client-secret.
     Without these, the connector will be created but connections cannot authenticate.
+
+    For custom code (request/response transformations), use --script to specify
+    a C# script file (.csx). The script can modify requests before they're sent
+    to the API and responses before they're returned.
 
     After creating the connector, use 'copilot connections create' to create a
     connection and authenticate.
@@ -531,6 +537,14 @@ def connectors_create(
       # OAuth connector with credentials
       copilot connectors create --name "My API" --swagger-file ./api.json \\
         --oauth-client-id "client123" --oauth-client-secret "secret456"
+
+      # Connector with custom code script
+      copilot connectors create --name "My API" --swagger-file ./api.json \\
+        --script ./code.csx --oauth-client-id "client123" --oauth-client-secret "secret456"
+
+      # Script for specific operations only
+      copilot connectors create --name "My API" --swagger-file ./api.json \\
+        --script ./code.csx --script-operations "CreateTask,UpdateTask"
 
       # Then create a connection
       copilot connections create --connector-id <connector-id> --name "My Connection" --oauth
@@ -583,6 +597,25 @@ def connectors_create(
                     typer.echo("Cancelled.")
                     raise typer.Exit(0)
 
+        # Validate script file if provided
+        script_file = None
+        if script:
+            script_path = Path(script)
+            if not script_path.exists():
+                typer.echo(f"Error: Script file not found: {script}", err=True)
+                raise typer.Exit(1)
+            if not script_path.suffix.lower() in ['.csx', '.cs']:
+                typer.echo(f"Warning: Script file should be a C# script (.csx or .cs): {script}", err=True)
+            script_file = str(script_path.resolve())
+
+        # Parse script operations if provided
+        ops_list = None
+        if script_operations:
+            ops_list = [op.strip() for op in script_operations.split(',') if op.strip()]
+            if not ops_list:
+                typer.echo("Error: --script-operations requires at least one operation ID", err=True)
+                raise typer.Exit(1)
+
         # Create connector
         client = get_client()
         result = client.create_custom_connector(
@@ -594,6 +627,8 @@ def connectors_create(
             oauth_client_id=oauth_client_id,
             oauth_client_secret=oauth_client_secret,
             oauth_redirect_url=oauth_redirect_url,
+            script_file=script_file,
+            script_operations=ops_list,
         )
 
         connector_id = result["connector_id"]
@@ -602,6 +637,8 @@ def connectors_create(
         print_success(f"Custom connector '{name}' created successfully!")
         typer.echo(f"Connector ID: {connector_id}")
         typer.echo(f"Environment: {environment_id}")
+        if script_file:
+            typer.echo(f"Custom Code: Enabled ({Path(script_file).name})")
         typer.echo()
 
         # Show next steps with redirect URL info for OAuth connectors
@@ -621,6 +658,123 @@ def connectors_create(
         else:
             typer.echo(f"1. Test the connector: copilot connectors get {connector_id}")
             typer.echo(f"2. Create a connection: copilot connections create --connector-id {connector_id} --name \"My Connection\"")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@app.command("update")
+def connectors_update(
+    connector_id: str = typer.Argument(..., help="The connector's unique identifier (e.g., shared_cr83c-5fasana-...)"),
+    swagger_file: Optional[str] = typer.Option(None, "--swagger-file", "-f", help="Path to OpenAPI 2.0 (Swagger) definition file"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Connector description"),
+    icon_brand_color: Optional[str] = typer.Option(None, "--icon-brand-color", help="Icon brand color (hex format)"),
+    environment: Optional[str] = typer.Option(None, "--environment", "--env", help="Environment ID (defaults to configured environment)"),
+    oauth_client_id: Optional[str] = typer.Option(None, "--oauth-client-id", help="OAuth 2.0 Client ID"),
+    oauth_client_secret: Optional[str] = typer.Option(None, "--oauth-client-secret", help="OAuth 2.0 Client Secret"),
+    oauth_redirect_url: Optional[str] = typer.Option(None, "--oauth-redirect-url", help="Custom OAuth redirect URL"),
+    script: Optional[str] = typer.Option(None, "--script", "-x", help="Path to C# script file (.csx) for custom code transformations"),
+    script_operations: Optional[str] = typer.Option(None, "--script-operations", help="Comma-separated list of operationIds that use the script"),
+):
+    """
+    Update an existing custom connector.
+
+    You can update the OpenAPI definition, description, custom code script, or
+    authentication settings. Only provided options will be updated; other settings
+    are preserved.
+
+    To add or update custom code, use --script to specify a C# script file (.csx).
+    The script can modify requests before they're sent to the API and responses
+    before they're returned.
+
+    Examples:
+      # Update OpenAPI definition
+      copilot connectors update shared_myapi-... --swagger-file ./api-v2.json
+
+      # Add custom code script to existing connector
+      copilot connectors update shared_myapi-... --script ./code.csx
+
+      # Update script for specific operations only
+      copilot connectors update shared_myapi-... --script ./code.csx --script-operations "CreateTask,UpdateTask"
+
+      # Update description only
+      copilot connectors update shared_myapi-... --description "Updated API connector"
+    """
+    try:
+        # Parse OpenAPI file if provided
+        openapi_def = None
+        if swagger_file:
+            swagger_path = Path(swagger_file)
+            if not swagger_path.exists():
+                typer.echo(f"Error: File not found: {swagger_file}", err=True)
+                raise typer.Exit(1)
+
+            try:
+                file_content = swagger_path.read_text()
+
+                # Try JSON first, then YAML
+                try:
+                    openapi_def = json.loads(file_content)
+                except json.JSONDecodeError:
+                    try:
+                        openapi_def = yaml.safe_load(file_content)
+                    except yaml.YAMLError as yaml_err:
+                        typer.echo(f"Error: Invalid JSON/YAML format: {yaml_err}", err=True)
+                        raise typer.Exit(1)
+            except Exception as e:
+                typer.echo(f"Error reading file: {e}", err=True)
+                raise typer.Exit(1)
+
+            # Validate OpenAPI definition
+            is_valid, error_msg = validate_openapi_definition(openapi_def)
+            if not is_valid:
+                typer.echo(f"Error: {error_msg}", err=True)
+                raise typer.Exit(1)
+
+        # Validate script file if provided
+        script_file = None
+        if script:
+            script_path = Path(script)
+            if not script_path.exists():
+                typer.echo(f"Error: Script file not found: {script}", err=True)
+                raise typer.Exit(1)
+            if not script_path.suffix.lower() in ['.csx', '.cs']:
+                typer.echo(f"Warning: Script file should be a C# script (.csx or .cs): {script}", err=True)
+            script_file = str(script_path.resolve())
+
+        # Parse script operations if provided
+        ops_list = None
+        if script_operations:
+            ops_list = [op.strip() for op in script_operations.split(',') if op.strip()]
+            if not ops_list:
+                typer.echo("Error: --script-operations requires at least one operation ID", err=True)
+                raise typer.Exit(1)
+
+        # Check if any update options provided
+        if not any([swagger_file, description, icon_brand_color, script, oauth_client_id, oauth_client_secret]):
+            typer.echo("Error: No update options provided. Use --help to see available options.", err=True)
+            raise typer.Exit(1)
+
+        # Update connector
+        client = get_client()
+        result = client.update_custom_connector(
+            connector_id=connector_id,
+            openapi_definition=openapi_def,
+            description=description,
+            icon_brand_color=icon_brand_color,
+            environment_id=environment,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+            oauth_redirect_url=oauth_redirect_url,
+            script_file=script_file,
+            script_operations=ops_list,
+        )
+
+        print_success(f"Connector '{connector_id}' updated successfully!")
+        typer.echo(f"Display Name: {result.get('display_name', 'N/A')}")
+        if result.get("script_uploaded"):
+            typer.echo(f"Custom Code: Updated ({Path(script_file).name})")
 
     except Exception as e:
         exit_code = handle_api_error(e)

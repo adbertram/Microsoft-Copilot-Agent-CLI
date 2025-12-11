@@ -4,7 +4,10 @@ import json
 import re
 import random
 import string
+import os
+import mimetypes
 from typing import Optional, Any
+from urllib.parse import urlparse, urlunparse
 import httpx
 from .config import get_config
 
@@ -2779,6 +2782,32 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
 
+    def _get_operations_from_openapi(self, openapi_def: dict) -> list[str]:
+        """
+        Extract all operation IDs from an OpenAPI definition.
+
+        By default, custom code scripts apply to all operations, but you can
+        limit this by specifying specific operation IDs in script_operations.
+
+        Args:
+            openapi_def: OpenAPI 2.0 definition
+
+        Returns:
+            list[str]: List of all operationId values found in the definition
+        """
+        operations = []
+        paths = openapi_def.get("paths", {})
+
+        for path, path_item in paths.items():
+            for method in ["get", "post", "put", "patch", "delete", "options", "head"]:
+                if method in path_item:
+                    operation = path_item[method]
+                    operation_id = operation.get("operationId")
+                    if operation_id:
+                        operations.append(operation_id)
+
+        return operations
+
     def _generate_api_properties(
         self,
         openapi_def: dict,
@@ -2898,6 +2927,171 @@ schemaName: {schema_name}
 
         return {"properties": properties}
 
+    def _get_user_object_id(self) -> str:
+        """
+        Get the current user's Azure AD object ID from the Azure CLI.
+
+        Returns:
+            str: User's Azure AD object ID
+
+        Raises:
+            ClientError: If unable to get the object ID
+        """
+        try:
+            result = subprocess.run(
+                ["az", "ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            object_id = result.stdout.strip()
+            if not object_id:
+                raise ClientError("Unable to get user object ID from Azure CLI")
+            return object_id
+        except subprocess.CalledProcessError as e:
+            raise ClientError(f"Failed to get user object ID: {e.stderr}")
+
+    def generate_resource_storage(
+        self,
+        environment_id: Optional[str] = None
+    ) -> str:
+        """
+        Generate a shared access signature (SAS) URL for uploading connector assets.
+
+        This calls the Power Apps API to get a temporary Azure Blob Storage URL
+        for uploading files like custom code scripts or icons.
+
+        Args:
+            environment_id: Environment ID (optional, uses config if not provided)
+
+        Returns:
+            str: SAS URL for Azure Blob Storage uploads
+
+        Raises:
+            ClientError: If the API call fails
+        """
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or provide --environment option."
+                )
+
+        # Get user's object ID for the API call
+        user_object_id = self._get_user_object_id()
+
+        # Get Power Apps token
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        # Call generateResourceStorage API - requires objectIds/{oid} in path
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps"
+            f"/objectIds/{user_object_id}/generateResourceStorage"
+            f"?api-version=2016-11-01"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "environment": {
+                "name": environment_id
+            }
+        }
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=30.0)
+            response.raise_for_status()
+            result = response.json()
+
+            sas_url = result.get("sharedAccessSignature")
+            if not sas_url:
+                raise ClientError("No sharedAccessSignature returned from API")
+
+            return sas_url
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_json = e.response.json()
+                if "error" in error_json:
+                    error_detail = error_json["error"].get("message", str(error_json))
+                else:
+                    error_detail = str(error_json)
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to generate resource storage: {error_detail}")
+
+    def upload_file_to_blob(
+        self,
+        sas_url: str,
+        file_path: str
+    ) -> str:
+        """
+        Upload a file to Azure Blob Storage using a SAS URL.
+
+        This uploads files (like custom code scripts) to the storage container
+        provided by the generateResourceStorage API.
+
+        Args:
+            sas_url: SAS URL from generate_resource_storage()
+            file_path: Local path to the file to upload
+
+        Returns:
+            str: Download URL for the uploaded file
+
+        Raises:
+            ClientError: If upload fails or file not found
+        """
+        if not os.path.exists(file_path):
+            raise ClientError(f"File not found: {file_path}")
+
+        # Parse the SAS URL to extract components
+        parsed = urlparse(sas_url)
+        # Account name is the subdomain (e.g., 'accountname' from 'accountname.blob.core.windows.net')
+        netloc = parsed.netloc
+        account_name = netloc.split('.')[0]
+        # Container name is the path (strip leading /)
+        container_name = parsed.path.strip('/')
+        # SAS token is the query string
+        sas_token = parsed.query
+
+        # Get file info
+        file_name = os.path.basename(file_path)
+        content_type, _ = mimetypes.guess_type(file_name)
+        if not content_type:
+            content_type = "application/octet-stream"
+
+        # Read file content
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+
+        # Build the blob upload URL
+        # Format: https://{account}.blob.core.windows.net/{container}/{blob}?{sas}
+        blob_url = f"https://{netloc}/{container_name}/{file_name}?{sas_token}"
+
+        headers = {
+            "x-ms-blob-type": "BlockBlob",
+            "Content-Type": content_type,
+            "Content-Length": str(len(file_content)),
+        }
+
+        try:
+            response = self._http_client.put(blob_url, headers=headers, content=file_content, timeout=60.0)
+            response.raise_for_status()
+
+            # Build the download URL (same URL without the SAS token for reference,
+            # but we return with SAS for immediate use)
+            download_url = f"https://{netloc}/{container_name}/{file_name}?{sas_token}"
+            return download_url
+        except httpx.HTTPStatusError as e:
+            error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to upload file to blob storage: {error_detail}")
+
     def create_custom_connector(
         self,
         name: str,
@@ -2908,6 +3102,8 @@ schemaName: {schema_name}
         oauth_client_id: Optional[str] = None,
         oauth_client_secret: Optional[str] = None,
         oauth_redirect_url: Optional[str] = None,
+        script_file: Optional[str] = None,
+        script_operations: Optional[list[str]] = None,
     ) -> dict:
         """
         Create a custom connector in the current environment via Power Apps API.
@@ -2924,6 +3120,10 @@ schemaName: {schema_name}
             environment_id: Environment ID (optional, uses config if not provided)
             oauth_client_id: OAuth 2.0 Client ID (required for OAuth connectors)
             oauth_client_secret: OAuth 2.0 Client Secret (required for OAuth connectors)
+            oauth_redirect_url: Custom OAuth redirect URL (optional)
+            script_file: Path to C# script file (.csx) for custom code (optional)
+            script_operations: List of operation IDs that use the script (optional,
+                defaults to all operations if script_file is provided)
 
         Returns:
             dict: Created connector details including connector_id
@@ -2946,6 +3146,22 @@ schemaName: {schema_name}
         # Generate connector ID from name
         sanitized = re.sub(r'[^a-z0-9_]', '_', name.lower())
         connector_id = f"cr_{sanitized}"
+
+        # Handle script upload if provided
+        script_url = None
+        if script_file:
+            if not os.path.exists(script_file):
+                raise ClientError(f"Script file not found: {script_file}")
+
+            # Get SAS URL for blob storage
+            sas_url = self.generate_resource_storage(environment_id)
+
+            # Upload the script
+            script_url = self.upload_file_to_blob(sas_url, script_file)
+
+            # If no operations specified, get all POST/PUT/PATCH operations from OpenAPI
+            if not script_operations:
+                script_operations = self._get_operations_from_openapi(openapi_definition)
 
         # Generate apiProperties from OpenAPI securityDefinitions
         api_properties = self._generate_api_properties(
@@ -2981,6 +3197,12 @@ schemaName: {schema_name}
                 **api_properties.get("properties", {})
             }
         }
+
+        # Add script configuration if script was uploaded
+        if script_url:
+            payload["properties"]["scriptDefinitionUrl"] = script_url
+            if script_operations:
+                payload["properties"]["scriptOperations"] = script_operations
 
         if description:
             payload["properties"]["description"] = description
@@ -3028,6 +3250,181 @@ schemaName: {schema_name}
             except Exception:
                 error_detail = e.response.text[:500] if e.response.text else str(e)
             raise ClientError(f"Failed to create connector: {error_detail}")
+
+    def update_custom_connector(
+        self,
+        connector_id: str,
+        openapi_definition: Optional[dict] = None,
+        description: Optional[str] = None,
+        icon_brand_color: Optional[str] = None,
+        environment_id: Optional[str] = None,
+        oauth_client_id: Optional[str] = None,
+        oauth_client_secret: Optional[str] = None,
+        oauth_redirect_url: Optional[str] = None,
+        script_file: Optional[str] = None,
+        script_operations: Optional[list[str]] = None,
+    ) -> dict:
+        """
+        Update an existing custom connector via Power Apps API.
+
+        This method updates a connector's OpenAPI definition, authentication settings,
+        and/or custom code script.
+
+        Args:
+            connector_id: The connector's unique identifier (e.g., shared_cr83c-5fasana-...)
+            openapi_definition: OpenAPI 2.0 definition (dict, optional - keep existing if not provided)
+            description: Connector description (optional)
+            icon_brand_color: Icon brand color in hex format (optional)
+            environment_id: Environment ID (optional, uses config if not provided)
+            oauth_client_id: OAuth 2.0 Client ID (optional)
+            oauth_client_secret: OAuth 2.0 Client Secret (optional)
+            oauth_redirect_url: Custom OAuth redirect URL (optional)
+            script_file: Path to C# script file (.csx) for custom code (optional)
+            script_operations: List of operation IDs that use the script (optional)
+
+        Returns:
+            dict: Updated connector details
+
+        Raises:
+            ClientError: If update fails
+        """
+        # Get environment ID
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or provide --environment option."
+                )
+
+        # Get current connector details to preserve existing settings
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        get_url = f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/{connector_id}"
+        get_params = {
+            "api-version": "2016-11-01",
+            "$filter": f"environment eq '{environment_id}'"
+        }
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(get_url, headers=headers, params=get_params, timeout=30.0)
+            response.raise_for_status()
+            existing_connector = response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to get existing connector: {error_detail}")
+
+        # Get existing properties
+        existing_props = existing_connector.get("properties", {})
+
+        # Handle script upload if provided
+        script_url = None
+        if script_file:
+            if not os.path.exists(script_file):
+                raise ClientError(f"Script file not found: {script_file}")
+
+            # Get SAS URL for blob storage
+            sas_url = self.generate_resource_storage(environment_id)
+
+            # Upload the script
+            script_url = self.upload_file_to_blob(sas_url, script_file)
+
+            # If no operations specified and OpenAPI provided, get all operations
+            if not script_operations and openapi_definition:
+                script_operations = self._get_operations_from_openapi(openapi_definition)
+            elif not script_operations:
+                # Use existing OpenAPI to get operations
+                existing_openapi = existing_props.get("OpenApiDefinition", {})
+                if existing_openapi:
+                    script_operations = self._get_operations_from_openapi(existing_openapi)
+
+        # Build update payload - only include properties we want to update
+        # Don't copy all existing properties as some (like displayName) cannot be updated
+        payload = {
+            "properties": {}
+        }
+
+        # Update with new values if provided
+        if openapi_definition:
+            payload["properties"]["OpenApiDefinition"] = openapi_definition
+
+            # Generate new apiProperties if OpenAPI definition changed
+            api_properties = self._generate_api_properties(
+                openapi_definition,
+                icon_brand_color or existing_props.get("iconBrandColor", "#007ee5"),
+                oauth_client_id,
+                oauth_client_secret,
+                oauth_redirect_url
+            )
+            payload["properties"].update(api_properties.get("properties", {}))
+
+            # Update backend service URL
+            schemes = openapi_definition.get("schemes", ["https"])
+            scheme = schemes[0] if schemes else "https"
+            host = openapi_definition.get("host", "")
+            base_path = openapi_definition.get("basePath", "")
+            backend_url = f"{scheme}://{host}{base_path}"
+            payload["properties"]["backendService"] = {"serviceUrl": backend_url}
+
+        if description is not None:
+            payload["properties"]["description"] = description
+
+        if icon_brand_color:
+            payload["properties"]["iconBrandColor"] = icon_brand_color
+
+        # Add script configuration if script was uploaded
+        if script_url:
+            payload["properties"]["scriptDefinitionUrl"] = script_url
+            if script_operations:
+                payload["properties"]["scriptOperations"] = script_operations
+
+        # Update via PATCH - use params dict to properly encode query string
+        update_url = f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/{connector_id}"
+        params = {
+            "api-version": "2016-11-01",
+            "$filter": f"environment eq '{environment_id}'"
+        }
+
+        try:
+            response = self._http_client.patch(update_url, headers=headers, params=params, json=payload, timeout=60.0)
+            response.raise_for_status()
+
+            # PATCH returns 204 No Content on success
+            if response.status_code == 204:
+                return {
+                    "connector_id": connector_id,
+                    "display_name": existing_props.get("displayName", ""),
+                    "environment_id": environment_id,
+                    "script_uploaded": script_url is not None,
+                    "result": {},
+                }
+
+            result = response.json()
+            return {
+                "connector_id": connector_id,
+                "display_name": result.get("properties", {}).get("displayName", ""),
+                "environment_id": environment_id,
+                "script_uploaded": script_url is not None,
+                "result": result,
+            }
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_json = e.response.json()
+                if "error" in error_json:
+                    error_detail = error_json["error"].get("message", str(error_json))
+                else:
+                    error_detail = str(error_json)
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to update connector: {error_detail}")
 
     def delete_custom_connector(
         self,
