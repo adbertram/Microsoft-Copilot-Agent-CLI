@@ -2239,10 +2239,10 @@ def tool_add(
         help="Output parameters as JSON string",
     ),
     # Type-specific parameters
-    connection_ref: Optional[str] = typer.Option(
+    connection_reference_id: Optional[str] = typer.Option(
         None,
-        "--connection-ref",
-        help="Connection reference ID (for connector/flow tools)",
+        "--connection-reference-id",
+        help="Connection reference ID (GUID) from 'copilot connection-references list' (required for connector tools)",
     ),
     no_history: bool = typer.Option(
         False,
@@ -2263,6 +2263,11 @@ def tool_add(
         None,
         "--body",
         help="Request body template (for http tools)",
+    ),
+    connection_mode: str = typer.Option(
+        "Maker",
+        "--connection-mode",
+        help="Connection mode for connector tools: 'Invoker' (user auth) or 'Maker' (maker auth)",
     ),
     force: bool = typer.Option(
         False,
@@ -2289,9 +2294,9 @@ def tool_add(
       - agent: Target agent GUID
 
     Examples:
-        # Connector tool
+        # Connector tool (requires connection reference ID)
         copilot agent tool add -a <agent-id> --toolType connector \\
-            --id "shared_asana:GetTask" --name "Get Task"
+            --id "shared_asana:GetTask" --connection-reference-id <conn-ref-id> --name "Get Task"
 
         # Prompt tool
         copilot agent tool add -a <agent-id> --toolType prompt \\
@@ -2315,6 +2320,12 @@ def tool_add(
     valid_types = ['connector', 'prompt', 'flow', 'http', 'agent']
     if tool_type.lower() not in valid_types:
         typer.echo(f"Error: Invalid tool type '{tool_type}'. Must be one of: {', '.join(valid_types)}", err=True)
+        raise typer.Exit(1)
+
+    # Validate connection mode
+    valid_modes = ['Invoker', 'Maker']
+    if connection_mode not in valid_modes:
+        typer.echo(f"Error: Invalid connection mode '{connection_mode}'. Must be one of: {', '.join(valid_modes)}", err=True)
         raise typer.Exit(1)
 
     # Parse JSON parameters
@@ -2345,67 +2356,6 @@ def tool_add(
     try:
         client = get_client()
 
-        # Auto-select connection reference for connector tools if not provided
-        if tool_type.lower() == 'connector' and not connection_ref:
-            # Parse connector_id from tool_id (format: connector_id:operation_id)
-            if ':' not in tool_id:
-                typer.echo("Error: Connector tool --id must be in format 'connector_id:operation_id' (e.g., 'shared_asana:GetTask')", err=True)
-                raise typer.Exit(1)
-
-            connector_id = tool_id.split(':', 1)[0]
-
-            # Look up connection references for this connector
-            all_refs = client.list_connection_references()
-            # Filter to those matching this connector
-            # connectorid format: /providers/Microsoft.PowerApps/apis/shared_asana
-            matching_refs = [
-                ref for ref in all_refs
-                if ref.get("connectorid", "").endswith(f"/{connector_id}")
-            ]
-
-            if not matching_refs:
-                typer.echo(f"Error: No connection reference found for connector '{connector_id}'.", err=True)
-                typer.echo("")
-                typer.echo("To use a connector tool, you need a connection reference that points to")
-                typer.echo("an authenticated connection for that connector.")
-                typer.echo("")
-                typer.echo("Steps to create one:")
-                typer.echo(f"  1. Check if a connection exists: copilot connections list --connector-id {connector_id} --table")
-                typer.echo(f"  2. If no connection exists, create one: copilot connections create -c {connector_id} -n 'My Connection' --oauth")
-                typer.echo(f"  3. Create a connection reference: copilot connection-references create -n 'My Reference' -c <connection-id>")
-                typer.echo("  4. Then retry this command")
-                raise typer.Exit(1)
-            elif len(matching_refs) == 1:
-                # Auto-select the only matching connection reference
-                selected_ref = matching_refs[0]
-                connection_ref = selected_ref.get("connectionid") or selected_ref.get("connectionreferenceid")
-                ref_name = selected_ref.get("connectionreferencedisplayname", "Unknown")
-                typer.echo(f"Auto-selected connection reference: {ref_name}")
-            else:
-                # Multiple matches - prompt user to choose
-                typer.echo(f"Multiple connection references found for connector '{connector_id}':")
-                typer.echo("")
-                for i, ref in enumerate(matching_refs, 1):
-                    ref_name = ref.get("connectionreferencedisplayname", "Unknown")
-                    ref_id = ref.get("connectionreferenceid", "")
-                    conn_id = ref.get("connectionid", "")
-                    typer.echo(f"  {i}. {ref_name}")
-                    typer.echo(f"     ID: {ref_id}")
-                    if conn_id:
-                        typer.echo(f"     Connection: {conn_id}")
-                typer.echo("")
-
-                # Prompt for selection
-                choice = typer.prompt("Select a connection reference (enter number)", type=int)
-                if choice < 1 or choice > len(matching_refs):
-                    typer.echo("Error: Invalid selection.", err=True)
-                    raise typer.Exit(1)
-
-                selected_ref = matching_refs[choice - 1]
-                connection_ref = selected_ref.get("connectionid") or selected_ref.get("connectionreferenceid")
-                ref_name = selected_ref.get("connectionreferencedisplayname", "Unknown")
-                typer.echo(f"Selected: {ref_name}")
-
         component_id = client.add_tool(
             bot_id=agent_id,
             tool_type=tool_type,
@@ -2414,7 +2364,8 @@ def tool_add(
             description=description,
             inputs=inputs_dict,
             outputs=outputs_dict,
-            connection_ref=connection_ref,
+            connection_reference_id=connection_reference_id,
+            connection_mode=connection_mode,
             no_history=no_history,
             method=method,
             headers=headers_dict,

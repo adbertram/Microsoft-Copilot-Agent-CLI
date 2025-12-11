@@ -1713,7 +1713,8 @@ outputType: {{}}"""
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         # Type-specific parameters
-        connection_ref: Optional[str] = None,
+        connection_reference_id: Optional[str] = None,
+        connection_mode: str = "Maker",
         no_history: bool = False,
         method: str = "GET",
         headers: Optional[dict] = None,
@@ -1731,7 +1732,8 @@ outputType: {{}}"""
             description: Description for AI orchestration
             inputs: Input parameter schema (JSON dict)
             outputs: Output parameter schema (JSON dict)
-            connection_ref: Connection reference ID (for connector/flow)
+            connection_reference_id: Connection reference ID (GUID) for connector tools (required)
+            connection_mode: Connection mode ('Invoker' for user auth, 'Maker' for maker auth)
             no_history: Don't pass conversation history (for agent)
             method: HTTP method (for http)
             headers: HTTP headers (for http)
@@ -1744,6 +1746,40 @@ outputType: {{}}"""
         # Get parent bot schema name
         bot = self.get_bot(bot_id)
         bot_schema = bot.get("schemaname", f"cr83c_bot{bot_id[:8]}")
+
+        # Build connection reference path if provided
+        connection_reference_path = None
+        if connection_reference_id:
+            try:
+                conn_ref = self.get_connection_reference(connection_reference_id)
+
+                # Always construct the path: {bot_schema}.{connector_id}.{connection_id}
+                # Note: connectionreferencelogicalname is NOT the runtime path format -
+                # it's just a short Dataverse entity identifier (e.g., "cr_asana_tasks___projects").
+                # The runtime expects the full path format that includes bot schema, connector ID,
+                # and connection ID separated by dots.
+                connection_id = conn_ref.get("connectionid")
+                connector_id_raw = conn_ref.get("connectorid", "")
+
+                # Remove /providers/Microsoft.PowerApps/apis/ prefix if present
+                connector_id = connector_id_raw.replace("/providers/Microsoft.PowerApps/apis/", "")
+
+                if not connection_id or not connector_id:
+                    raise ClientError(
+                        f"Connection reference '{connection_reference_id}' is missing connectionid or connectorid.\n"
+                        f"Connection ID: {connection_id}\n"
+                        f"Connector ID: {connector_id}"
+                    )
+
+                # Build the full path: {bot_schema}.{connector_id}.{connection_id}
+                connection_reference_path = f"{bot_schema}.{connector_id}.{connection_id}"
+
+            except Exception as e:
+                raise ClientError(
+                    f"Connection reference '{connection_reference_id}' not found.\n"
+                    f"Use 'copilot connection-references list --table' to find existing connection references.\n"
+                    f"Error: {str(e)}"
+                )
 
         # Dispatch to type-specific generator
         generators = {
@@ -1767,7 +1803,8 @@ outputType: {{}}"""
             description=description,
             inputs=inputs,
             outputs=outputs,
-            connection_ref=connection_ref,
+            connection_reference_path=connection_reference_path,
+            connection_mode=connection_mode,
             no_history=no_history,
             method=method,
             headers=headers,
@@ -1797,106 +1834,6 @@ outputType: {{}}"""
             match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
             if match:
                 component_id = match.group(1)
-
-        # For connector tools, create and associate the bot-specific connection reference
-        if tool_type.lower() == 'connector' and component_id and connection_ref:
-            try:
-                # Parse connector_id from tool_id (format: "connector_id:operation_id")
-                connector_id = tool_id.split(':')[0] if ':' in tool_id else tool_id
-
-                # Build the connection reference logical name
-                conn_ref_logical_name = f"{bot_schema}.{connector_id}.{connection_ref}"
-
-                # Check if connection reference already exists
-                check_url = f"{self.api_url}/connectionreferences?$filter=connectionreferencelogicalname eq '{conn_ref_logical_name}'&$select=connectionreferenceid"
-                check_response = self._http_client.get(check_url, headers=headers_req, timeout=60.0)
-                check_response.raise_for_status()
-                existing_refs = check_response.json().get("value", [])
-
-                conn_ref_id = ""
-                if existing_refs:
-                    # Use existing connection reference
-                    conn_ref_id = existing_refs[0].get("connectionreferenceid", "")
-                else:
-                    # Create a new bot-specific connection reference
-                    conn_ref_data = {
-                        "connectionreferencelogicalname": conn_ref_logical_name,
-                        "connectionreferencedisplayname": conn_ref_logical_name,
-                        "connectorid": f"/providers/Microsoft.PowerApps/apis/{connector_id}",
-                        "connectionid": connection_ref,
-                        "statecode": 0,
-                        "statuscode": 1
-                    }
-
-                    conn_ref_url = f"{self.api_url}/connectionreferences"
-                    conn_ref_response = self._http_client.post(
-                        conn_ref_url, headers=headers_req, json=conn_ref_data, timeout=120.0
-                    )
-                    conn_ref_response.raise_for_status()
-
-                    # Extract connection reference ID
-                    conn_ref_entity_id = conn_ref_response.headers.get("OData-EntityId", "")
-                    if conn_ref_entity_id:
-                        match = re.search(r'connectionreferences\(([^)]+)\)', conn_ref_entity_id)
-                        if match:
-                            conn_ref_id = match.group(1)
-
-                # Associate the connection reference with the botcomponent
-                if conn_ref_id:
-                    assoc_url = f"{self.api_url}/botcomponents({component_id})/botcomponent_connectionreference/$ref"
-                    assoc_data = {
-                        "@odata.id": f"{self.api_url}/connectionreferences({conn_ref_id})"
-                    }
-                    assoc_response = self._http_client.post(
-                        assoc_url, headers=headers_req, json=assoc_data, timeout=120.0
-                    )
-                    assoc_response.raise_for_status()
-
-                # Update bot authentication if not configured or invalid
-                # This ensures the agent can authenticate connector operations
-                try:
-                    auth_config_str = bot.get("authenticationconfiguration")
-                    auth_config = json.loads(auth_config_str) if auth_config_str else None
-
-                    # Check if bot has valid authentication configuration
-                    needs_auth_update = False
-                    if not auth_config or not auth_config.get("connectionName"):
-                        needs_auth_update = True
-                    else:
-                        # Verify the configured connection exists
-                        current_conn_id = auth_config.get("connectionName")
-                        try:
-                            conn_check_url = f"{self.api_url}/connections({current_conn_id})"
-                            conn_check_response = self._http_client.get(conn_check_url, headers=headers_req, timeout=30.0)
-                            if conn_check_response.status_code == 404:
-                                needs_auth_update = True
-                        except Exception:
-                            # Connection check failed, assume it's invalid
-                            needs_auth_update = True
-
-                    if needs_auth_update:
-                        # Update bot authentication to use this connection
-                        new_auth_config = {
-                            "$kind": "BotAuthenticationConfiguration",
-                            "connectionName": connection_ref
-                        }
-                        self.update_bot_auth(
-                            bot_id=bot_id,
-                            mode=3,  # Custom Azure Active Directory
-                            trigger=0,  # As Needed
-                            configuration=new_auth_config
-                        )
-                        import sys
-                        print(f"Updated bot authentication to use connection: {connection_ref}", file=sys.stderr)
-                except Exception as auth_err:
-                    # Log warning but don't fail
-                    import sys
-                    print(f"Warning: Failed to update bot authentication: {auth_err}", file=sys.stderr)
-
-            except Exception as e:
-                # Log warning but don't fail - the tool was created successfully
-                import sys
-                print(f"Warning: Failed to create connection reference association: {e}", file=sys.stderr)
 
         return component_id
 
@@ -2089,18 +2026,20 @@ action:
         self, bot_id: str, bot_schema: str, tool_id: str,
         name: Optional[str], description: Optional[str],
         inputs: Optional[dict], outputs: Optional[dict],
-        connection_ref: Optional[str] = None,
-        force: bool = False, **kwargs
+        connection_reference_path: Optional[str] = None,
+        force: bool = False,
+        connection_mode: str = "Maker",
+        **kwargs
     ) -> tuple[str, str, str, str]:
         """Generate YAML for InvokeConnectorTaskAction."""
         # Parse connector_id:operation_id format
         if ':' not in tool_id:
             raise ClientError("Connector tool --id must be in format 'connector_id:operation_id' (e.g., 'shared_asana:GetTask')")
 
-        # Connection reference is required for connector tools
-        if not connection_ref:
+        # Connection reference path is required for connector tools
+        if not connection_reference_path:
             raise ClientError(
-                "Connector tools require --connection-ref parameter.\n"
+                "Connector tools require --connection-reference-id parameter.\n"
                 "Use 'copilot connection-references list --table' to find existing connection references."
             )
 
@@ -2157,10 +2096,6 @@ action:
         except Exception as e:
             raise ClientError(f"Failed to validate operation: {e}")
 
-        # Build full connection reference: {bot_schema}.{connector_id}.{connection_id}
-        # connection_ref should be the connection GUID
-        full_connection_ref = f"{bot_schema}.{connector_id}.{connection_ref}"
-
         # Get connector display name for naming
         connector_display_name = connector_id.replace('shared_', '').title()
 
@@ -2191,9 +2126,9 @@ modelDisplayName: {resolved_name}
 modelDescription: {resolved_description}
 {outputs_yaml}action:
   kind: InvokeConnectorTaskAction
-  connectionReference: {full_connection_ref}
+  connectionReference: {connection_reference_path}
   connectionProperties:
-    mode: Invoker
+    mode: {connection_mode}
 
   operationId: {operation_id}
 
@@ -2250,7 +2185,7 @@ schemaName: {schema_name}
         self, bot_id: str, bot_schema: str, tool_id: str,
         name: Optional[str], description: Optional[str],
         inputs: Optional[dict], outputs: Optional[dict],
-        connection_ref: Optional[str] = None, **kwargs
+        connection_reference_path: Optional[str] = None, **kwargs
     ) -> tuple[str, str, str, str]:
         """Generate YAML for InvokeFlowTaskAction."""
         # Use flow ID as name if not provided
@@ -2272,8 +2207,8 @@ schemaName: {schema_name}
             "  kind: InvokeFlowTaskAction",
             f"  flowId: {flow_ref}",
         ]
-        if connection_ref:
-            action_lines.append(f"  connectionReference: {connection_ref}")
+        if connection_reference_path:
+            action_lines.append(f"  connectionReference: {connection_reference_path}")
 
         tool_yaml = f"""kind: TaskDialog
 modelDescription: {resolved_description}
@@ -2415,26 +2350,31 @@ schemaName: {schema_name}
 
     def list_connectors(
         self,
+        custom_only: bool = False,
+        managed_only: bool = False,
         environment_id: Optional[str] = None,
-        include_actions: bool = False,
     ) -> list[dict]:
         """
-        List all available connectors (both custom and managed) in the environment.
+        List all connectors in the environment (both custom and managed).
+
+        This queries multiple APIs to get complete connector coverage:
+        1. Dataverse 'connector' table - for custom connectors registered in Dataverse
+        2. Power Apps API - for managed (Microsoft) connectors AND custom connectors
+           created via the Power Apps API that may not be in Dataverse
 
         Args:
+            custom_only: If True, only return custom connectors.
+            managed_only: If True, only return managed (Microsoft) connectors.
             environment_id: Power Platform environment ID. If not provided,
-                            will use DATAVERSE_ENVIRONMENT_ID from config.
-            include_actions: If True, fetch full connector details including
-                            swagger/actions for each connector. This is slower
-                            but provides operation details.
+                           will use DATAVERSE_ENVIRONMENT_ID from config.
 
         Returns:
-            List of connector records from Power Apps API
+            List of connector records with normalized properties structure.
 
         Note:
-            This uses the Power Apps API to list all connectors available
-            in the environment, including both managed (Microsoft) and
-            custom connectors.
+            Custom connectors are merged from both Dataverse and Power Apps API
+            to ensure ALL custom connectors are visible regardless of how they
+            were created.
         """
         # Get environment ID from config if not provided
         if not environment_id:
@@ -2447,6 +2387,119 @@ schemaName: {schema_name}
                     "You can find your environment ID in the Power Platform admin center."
                 )
 
+        all_connectors = []
+        seen_connector_ids = set()
+
+        # Get custom connectors from Dataverse (unless managed_only)
+        if not managed_only:
+            custom_connectors = self._list_custom_connectors_from_dataverse()
+            for conn in custom_connectors:
+                conn_id = conn.get("name", "")
+                if conn_id:
+                    seen_connector_ids.add(conn_id)
+                all_connectors.append(conn)
+
+            # Also get custom connectors from Power Apps API (may not be in Dataverse)
+            powerapps_custom = self._list_custom_connectors_from_powerapps(environment_id)
+            for conn in powerapps_custom:
+                conn_id = conn.get("name", "")
+                # Only add if not already seen from Dataverse
+                if conn_id and conn_id not in seen_connector_ids:
+                    seen_connector_ids.add(conn_id)
+                    all_connectors.append(conn)
+
+        # Get managed connectors from Power Apps API (unless custom_only)
+        if not custom_only:
+            managed_connectors = self._list_managed_connectors_from_powerapps(environment_id)
+            all_connectors.extend(managed_connectors)
+
+        return all_connectors
+
+    def _list_custom_connectors_from_dataverse(self) -> list[dict]:
+        """
+        List custom connectors from the Dataverse connector table.
+
+        Returns:
+            List of custom connector records with normalized properties.
+        """
+        # Build query - select only needed fields to reduce response size
+        select_fields = (
+            "connectorid,name,displayname,connectorinternalid,connectortype,"
+            "description,ismanaged,statecode,statuscode,createdon,modifiedon,"
+            "openapidefinition,connectionparameters,iconbrandcolor"
+        )
+
+        endpoint = f"connectors?$select={select_fields}&$orderby=displayname asc"
+
+        try:
+            data = self._request("GET", endpoint)
+            connectors = data.get("value", [])
+
+            # Normalize to a compatible format
+            normalized = []
+            for conn in connectors:
+                conn_type = conn.get("connectortype", 0)
+                is_custom = conn_type == 1
+
+                # Parse OpenAPI definition to extract additional info
+                openapi_def = {}
+                try:
+                    openapi_str = conn.get("openapidefinition", "{}")
+                    if openapi_str:
+                        openapi_def = json.loads(openapi_str)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                # Extract publisher from OpenAPI info if available
+                info = openapi_def.get("info", {})
+                publisher = info.get("contact", {}).get("name", "")
+                if not publisher:
+                    publisher = info.get("x-ms-publisher", "")
+
+                normalized.append({
+                    "name": conn.get("connectorinternalid", conn.get("name", "")),
+                    "properties": {
+                        "displayName": conn.get("displayname", ""),
+                        "description": conn.get("description", "") or info.get("description", ""),
+                        "publisher": publisher,
+                        "tier": "Standard" if is_custom else "N/A",
+                        "environment": True if is_custom else False,
+                        "swagger": openapi_def,
+                    },
+                    "_dataverse": {
+                        "connectorid": conn.get("connectorid", ""),
+                        "name": conn.get("name", ""),
+                        "connectorinternalid": conn.get("connectorinternalid", ""),
+                        "connectortype": conn_type,
+                        "ismanaged": conn.get("ismanaged", False),
+                        "statecode": conn.get("statecode", 0),
+                        "statuscode": conn.get("statuscode", 1),
+                        "createdon": conn.get("createdon", ""),
+                        "modifiedon": conn.get("modifiedon", ""),
+                        "iconbrandcolor": conn.get("iconbrandcolor", ""),
+                    },
+                    "_source": "dataverse",
+                })
+
+            return normalized
+        except ClientError:
+            raise
+        except Exception as e:
+            raise ClientError(f"Failed to list custom connectors from Dataverse: {e}")
+
+    def _list_custom_connectors_from_powerapps(self, environment_id: str) -> list[dict]:
+        """
+        List custom connectors from the Power Apps API.
+
+        Custom connectors created via the Power Apps API may not be registered
+        in Dataverse, so we need to query both sources to get complete coverage.
+
+        Args:
+            environment_id: Power Platform environment ID.
+
+        Returns:
+            List of custom connector records with normalized properties.
+        """
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
         url = (
@@ -2466,21 +2519,31 @@ schemaName: {schema_name}
             data = response.json()
             connectors = data.get("value", [])
 
-            # If include_actions, fetch full details for each connector
-            if include_actions:
-                detailed_connectors = []
-                for conn in connectors:
-                    connector_id = conn.get("name", "")
-                    if connector_id:
-                        try:
-                            detailed = self.get_connector(connector_id, environment_id)
-                            detailed_connectors.append(detailed)
-                        except Exception:
-                            # If we can't get details, use the basic info
-                            detailed_connectors.append(conn)
-                return detailed_connectors
+            # Filter to only custom connectors (isCustomApi == true)
+            custom = []
+            for conn in connectors:
+                props = conn.get("properties", {})
+                if props.get("isCustomApi", False):
+                    # Normalize to match format from other sources
+                    info = props.get("swagger", {}).get("info", {}) if props.get("swagger") else {}
+                    publisher = props.get("publisher", "")
+                    if not publisher:
+                        publisher = info.get("contact", {}).get("name", "")
 
-            return connectors
+                    custom.append({
+                        "name": conn.get("name", ""),
+                        "properties": {
+                            "displayName": props.get("displayName", ""),
+                            "description": props.get("description", "") or info.get("description", ""),
+                            "publisher": publisher,
+                            "tier": props.get("tier", "Standard"),
+                            "isCustomApi": True,
+                            "iconBrandColor": props.get("iconBrandColor", ""),
+                        },
+                        "_source": "powerapps",
+                    })
+
+            return custom
         except httpx.HTTPStatusError as e:
             error_detail = ""
             try:
@@ -2489,7 +2552,62 @@ schemaName: {schema_name}
                     error_detail = error_body["error"].get("message", str(error_body))
             except Exception:
                 error_detail = e.response.text[:500] if e.response.text else str(e)
-            raise ClientError(f"Failed to list connectors: HTTP {e.response.status_code}: {error_detail}")
+            raise ClientError(f"Failed to list custom connectors from Power Apps: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Request failed: {e}")
+
+    def _list_managed_connectors_from_powerapps(self, environment_id: str) -> list[dict]:
+        """
+        List managed (Microsoft) connectors from the Power Apps API.
+
+        Args:
+            environment_id: Power Platform environment ID.
+
+        Returns:
+            List of managed connector records with normalized properties.
+        """
+        powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
+
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis"
+            f"?api-version=2016-11-01"
+            f"&$filter=environment eq '{environment_id}'"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerapps_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.get(url, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            connectors = data.get("value", [])
+
+            # Filter to only managed connectors (exclude custom ones - we get those from Dataverse)
+            # Custom connectors have "environment" in properties
+            managed = []
+            for conn in connectors:
+                props = conn.get("properties", {})
+                # Skip custom connectors - they come from Dataverse
+                if "environment" in props:
+                    continue
+
+                # Add source marker
+                conn["_source"] = "powerapps"
+                managed.append(conn)
+
+            return managed
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to list managed connectors: HTTP {e.response.status_code}: {error_detail}")
         except httpx.RequestError as e:
             raise ClientError(f"Request failed: {e}")
 
@@ -2497,13 +2615,17 @@ schemaName: {schema_name}
         """
         Get a specific connector by ID.
 
+        This method checks both Dataverse (for custom connectors) and Power Apps API
+        (for managed connectors) to find the connector.
+
         Args:
-            connector_id: The connector's unique identifier (e.g., shared_office365)
+            connector_id: The connector's unique identifier (e.g., shared_office365,
+                         shared_cr83c-5fasana-5fd251d00ef0afcb57)
             environment_id: Power Platform environment ID. If not provided,
                             will use DATAVERSE_ENVIRONMENT_ID from config.
 
         Returns:
-            Connector record from Power Apps API
+            Connector record (normalized format)
         """
         # Get environment ID from config if not provided
         if not environment_id:
@@ -2516,6 +2638,96 @@ schemaName: {schema_name}
                     "You can find your environment ID in the Power Platform admin center."
                 )
 
+        # First, try to find in Dataverse (custom connectors)
+        try:
+            connector = self._get_connector_from_dataverse(connector_id)
+            if connector:
+                return connector
+        except ClientError:
+            pass  # Not found in Dataverse, try Power Apps API
+
+        # Then try Power Apps API (managed connectors)
+        return self._get_connector_from_powerapps(connector_id, environment_id)
+
+    def _get_connector_from_dataverse(self, connector_id: str) -> Optional[dict]:
+        """
+        Get a custom connector from Dataverse by connectorinternalid.
+
+        Args:
+            connector_id: The connector's internal ID (e.g., shared_cr83c-5fasana-...)
+
+        Returns:
+            Connector record or None if not found
+        """
+        # Query by connectorinternalid
+        endpoint = (
+            f"connectors?$filter=connectorinternalid eq '{connector_id}'"
+            f"&$select=connectorid,name,displayname,connectorinternalid,connectortype,"
+            f"description,ismanaged,statecode,statuscode,createdon,modifiedon,"
+            f"openapidefinition,connectionparameters,iconbrandcolor"
+        )
+
+        try:
+            data = self._request("GET", endpoint)
+            connectors = data.get("value", [])
+
+            if not connectors:
+                return None
+
+            conn = connectors[0]
+            conn_type = conn.get("connectortype", 0)
+            is_custom = conn_type == 1
+
+            # Parse OpenAPI definition
+            openapi_def = {}
+            try:
+                openapi_str = conn.get("openapidefinition", "{}")
+                if openapi_str:
+                    openapi_def = json.loads(openapi_str)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            info = openapi_def.get("info", {})
+            publisher = info.get("contact", {}).get("name", "") or info.get("x-ms-publisher", "")
+
+            return {
+                "name": conn.get("connectorinternalid", conn.get("name", "")),
+                "properties": {
+                    "displayName": conn.get("displayname", ""),
+                    "description": conn.get("description", "") or info.get("description", ""),
+                    "publisher": publisher,
+                    "tier": "Standard" if is_custom else "N/A",
+                    "environment": True if is_custom else False,
+                    "swagger": openapi_def,
+                },
+                "_dataverse": {
+                    "connectorid": conn.get("connectorid", ""),
+                    "name": conn.get("name", ""),
+                    "connectorinternalid": conn.get("connectorinternalid", ""),
+                    "connectortype": conn_type,
+                    "ismanaged": conn.get("ismanaged", False),
+                    "statecode": conn.get("statecode", 0),
+                    "statuscode": conn.get("statuscode", 1),
+                    "createdon": conn.get("createdon", ""),
+                    "modifiedon": conn.get("modifiedon", ""),
+                    "iconbrandcolor": conn.get("iconbrandcolor", ""),
+                },
+                "_source": "dataverse",
+            }
+        except ClientError:
+            return None
+
+    def _get_connector_from_powerapps(self, connector_id: str, environment_id: str) -> dict:
+        """
+        Get a connector from Power Apps API.
+
+        Args:
+            connector_id: The connector's unique identifier
+            environment_id: Power Platform environment ID
+
+        Returns:
+            Connector record from Power Apps API
+        """
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
         url = (
@@ -2532,7 +2744,9 @@ schemaName: {schema_name}
         try:
             response = self._http_client.get(url, headers=headers, timeout=30.0)
             response.raise_for_status()
-            return response.json()
+            connector = response.json()
+            connector["_source"] = "powerapps"
+            return connector
         except httpx.HTTPStatusError as e:
             error_detail = ""
             try:
@@ -2801,13 +3015,13 @@ schemaName: {schema_name}
         environment_id: Optional[str] = None
     ) -> None:
         """
-        Delete a custom connector via Power Apps API.
+        Delete a custom connector.
 
-        This uses the Power Apps Management API to delete custom connectors.
-        Only custom connectors can be deleted; managed (Microsoft) connectors cannot.
+        This method tries to delete via Dataverse first (for custom/MCP connectors),
+        then falls back to Power Apps API if not found in Dataverse.
 
         Args:
-            connector_id: The connector's unique identifier (e.g., shared_asana-20test-5fd251...)
+            connector_id: The connector's unique identifier (e.g., shared_cr83c-5fasana-...)
             environment_id: Environment ID (optional, uses config if not provided)
 
         Raises:
@@ -2823,7 +3037,36 @@ schemaName: {schema_name}
                     "in your .env file or provide --environment option."
                 )
 
-        # Get Power Apps token
+        # First, try to find and delete from Dataverse (custom connectors)
+        dataverse_connector = self._get_connector_from_dataverse(connector_id)
+        if dataverse_connector:
+            # Delete via Dataverse using the connectorid (GUID)
+            connector_guid = dataverse_connector.get("_dataverse", {}).get("connectorid")
+            if connector_guid:
+                try:
+                    self._request("DELETE", f"connectors({connector_guid})", timeout=60.0)
+                    return  # Success
+                except ClientError as e:
+                    raise ClientError(f"Failed to delete connector from Dataverse: {e}")
+
+        # Fall back to Power Apps API (for connectors created via that API)
+        self._delete_connector_via_powerapps(connector_id, environment_id)
+
+    def _delete_connector_via_powerapps(
+        self,
+        connector_id: str,
+        environment_id: str
+    ) -> None:
+        """
+        Delete a custom connector via Power Apps API.
+
+        Args:
+            connector_id: The connector's unique identifier
+            environment_id: Environment ID
+
+        Raises:
+            ClientError: If deletion fails
+        """
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
         url = (
@@ -4082,7 +4325,8 @@ schemaName: {schema_name}
         using the admin API.
 
         Args:
-            connector_id: Optional connector identifier (e.g., shared_office365).
+            connector_id: Optional connector identifier (e.g., shared_office365,
+                          shared_cr83c-5fasana-5fd251d00ef0afcb57).
                           If not provided, returns all connections.
             environment_id: Power Platform environment ID. If not provided,
                             will use DATAVERSE_ENVIRONMENT_ID from config.
@@ -4102,21 +4346,14 @@ schemaName: {schema_name}
 
         powerapps_token = get_access_token_from_azure_cli("https://service.powerapps.com/")
 
-        # Use different endpoints based on whether connector_id is provided
-        if connector_id:
-            # Connector-specific endpoint
-            url = (
-                f"https://api.powerapps.com/providers/Microsoft.PowerApps/apis/"
-                f"{connector_id}/connections"
-                f"?api-version=2016-11-01&$filter=environment%20eq%20%27{environment_id}%27"
-            )
-        else:
-            # Admin endpoint to get all connections
-            url = (
-                f"https://api.powerapps.com/providers/Microsoft.PowerApps/scopes/admin/"
-                f"environments/{environment_id}/connections"
-                f"?api-version=2016-11-01"
-            )
+        # Always use admin endpoint - it works for both custom and managed connectors
+        # The connector-specific endpoint doesn't work for custom connectors not visible
+        # in the Power Apps API (like MCP connectors)
+        url = (
+            f"https://api.powerapps.com/providers/Microsoft.PowerApps/scopes/admin/"
+            f"environments/{environment_id}/connections"
+            f"?api-version=2016-11-01"
+        )
 
         headers = {
             "Authorization": f"Bearer {powerapps_token}",
@@ -4124,10 +4361,19 @@ schemaName: {schema_name}
         }
 
         try:
-            response = self._http_client.get(url, headers=headers, timeout=30.0)
+            response = self._http_client.get(url, headers=headers, timeout=60.0)
             response.raise_for_status()
             data = response.json()
-            return data.get("value", [])
+            connections = data.get("value", [])
+
+            # Filter by connector_id if provided
+            if connector_id:
+                connections = [
+                    c for c in connections
+                    if c.get("properties", {}).get("apiId", "").endswith(f"/{connector_id}")
+                ]
+
+            return connections
         except httpx.HTTPStatusError as e:
             error_detail = ""
             try:
@@ -4571,6 +4817,149 @@ schemaName: {schema_name}
         except Exception:
             # Silently return empty if we can't get user info
             return {}
+
+    def bind_user_connection(
+        self,
+        bot_id: str,
+        connector_id: str,
+        connection_id: str,
+        environment_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Bind a connection to a Copilot Studio bot (agent).
+
+        This uses the Power Platform user-connections API to associate a connection
+        with a bot, enabling the bot to use the connection's credentials when
+        executing connector tools.
+
+        This is the same operation performed by the Copilot Studio UI when you
+        click "Connect" on a connector tool's connection prompt.
+
+        Args:
+            bot_id: The bot's unique identifier (GUID)
+            connector_id: The connector's identifier (e.g., shared_asana or
+                         shared_asana-20tasks-20api-5fd251d00e-f825669a42b5e533)
+            connection_id: The connection's unique identifier (GUID)
+            environment_id: Power Platform environment ID. If not provided,
+                           will use DATAVERSE_ENVIRONMENT_ID from config.
+
+        Returns:
+            Dict containing:
+                - success: True if binding succeeded
+                - bot_id: The bot ID
+                - connector_id: The connector ID
+                - connection_id: The connection ID
+                - binding_key: The full binding key used
+
+        Raises:
+            ClientError: If the binding fails
+
+        Example:
+            >>> client.bind_user_connection(
+            ...     bot_id="12345678-1234-1234-1234-123456789abc",
+            ...     connector_id="shared_asana",
+            ...     connection_id="60554a33-2140-4add-8a22-b35b400ff016"
+            ... )
+        """
+        # Get environment ID from config if not provided
+        if not environment_id:
+            config = get_config()
+            environment_id = config.environment_id
+            if not environment_id:
+                raise ClientError(
+                    "Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or provide the environment_id parameter."
+                )
+
+        # Get bot details to retrieve schema name (bot_internal_id)
+        bot = self.get_bot(bot_id)
+        bot_schema = bot.get("schemaname")
+        if not bot_schema:
+            raise ClientError(
+                f"Could not get schemaname for bot {bot_id}. "
+                "The bot may not exist or you may not have access to it."
+            )
+
+        # Normalize connection_id - remove dashes for the binding key
+        connection_id_normalized = connection_id.replace("-", "")
+
+        # Build the connector bindings key
+        # Format: {bot_schema}.{connector_id}.{connection_id_no_dashes}
+        binding_key = f"{bot_schema}.{connector_id}.{connection_id_normalized}"
+
+        # Build the request body
+        request_body = {
+            "connectorBindings": {
+                binding_key: {
+                    "connectorId": f"/providers/Microsoft.PowerApps/apis/{connector_id}",
+                    "connectionId": connection_id_normalized
+                }
+            },
+            "flowBindings": {},
+            "aiModelBindings": {}
+        }
+
+        # Get Power Platform API token
+        powerplatform_token = get_access_token_from_azure_cli("https://api.powerplatform.com")
+
+        # Extract GUID from environment ID if it's in "Default-{GUID}" format
+        # The API URL uses just the GUID portion, not the "Default-" prefix
+        env_guid = environment_id
+        if environment_id.lower().startswith("default-"):
+            env_guid = environment_id[8:]  # Remove "Default-" prefix
+
+        # Transform environment GUID to Power Platform API URL format
+        # The environment ID needs special formatting for the API URL:
+        # 1. Remove all dashes from the GUID
+        # 2. Insert a period before the last 2 characters
+        # Example: "6b6c3ede-aa0d-4268-a46f-96b7621b13a4" -> "6b6c3edeaa0d4268a46f96b7621b13.a4"
+        # Reference: https://dev.to/wyattdave/the-4-apis-of-the-power-platform-1mm8
+        env_guid_no_dashes = env_guid.replace("-", "")
+        # Insert period before last 2 chars
+        env_url_id = f"{env_guid_no_dashes[:-2]}.{env_guid_no_dashes[-2:]}"
+
+        # Build the API URL
+        # Format: https://default{formatted_env_id}.environment.api.powerplatform.com/powervirtualagents/bots/{bot_schema}/channels/pva-studio/user-connections
+        url = (
+            f"https://default{env_url_id}.environment.api.powerplatform.com"
+            f"/powervirtualagents/bots/{bot_schema}/channels/pva-studio/user-connections"
+            f"?api-version=2022-03-01-preview"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {powerplatform_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=request_body, timeout=60.0)
+            response.raise_for_status()
+
+            # API returns 204 No Content on success
+            return {
+                "success": True,
+                "bot_id": bot_id,
+                "bot_schema": bot_schema,
+                "connector_id": connector_id,
+                "connection_id": connection_id,
+                "binding_key": binding_key,
+            }
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_body = e.response.json()
+                if "error" in error_body:
+                    error_detail = error_body["error"].get("message", str(error_body))
+                elif "message" in error_body:
+                    error_detail = error_body.get("message", str(error_body))
+                else:
+                    error_detail = str(error_body)
+            except Exception:
+                error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to bind connection to bot: HTTP {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Connection binding request failed: {e}")
 
     def close(self):
         """Close the HTTP client."""

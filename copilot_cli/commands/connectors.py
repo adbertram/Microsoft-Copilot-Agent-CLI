@@ -20,7 +20,11 @@ def is_custom_connector(connector: dict) -> bool:
     """
     props = connector.get("properties", {})
 
-    # Check for custom connector indicators
+    # Explicit isCustomApi flag from Power Apps API
+    if props.get("isCustomApi", False):
+        return True
+
+    # Check for custom connector indicators (Dataverse-sourced connectors)
     if "environment" in props:
         return True
 
@@ -39,6 +43,7 @@ def is_custom_connector(connector: dict) -> bool:
 def format_connector_for_display(connector: dict) -> dict:
     """Format a connector for display."""
     props = connector.get("properties", {})
+    dataverse = connector.get("_dataverse", {})
 
     description = props.get("description") or ""
     if len(description) > 60:
@@ -48,7 +53,8 @@ def format_connector_for_display(connector: dict) -> dict:
 
     return {
         "name": props.get("displayName") or connector.get("name", ""),
-        "id": connector.get("name", ""),
+        "id": connector.get("name", ""),  # connectorinternalid (e.g., shared_cr83c-5fasana-...)
+        "logical_name": dataverse.get("name", ""),  # Dataverse logical name (e.g., cr83c_5fasana)
         "type": "Custom" if is_custom else "Managed",
         "publisher": props.get("publisher") or "",
         "tier": props.get("tier") or "N/A",
@@ -228,24 +234,34 @@ def connectors_list(
         "-t",
         help="Display output as a formatted table instead of JSON",
     ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        "-r",
+        help="Output raw JSON including all metadata",
+    ),
 ):
     """
     List all available connectors in the environment.
+
+    This command queries TWO APIs to get complete connector coverage:
+      - Dataverse connector table: ALL custom connectors (including MCP connectors)
+      - Power Apps API: Managed (Microsoft) connectors
 
     Connectors are proxies/wrappers around APIs that define what actions
     are available (e.g., Asana, SharePoint, SQL Server). They represent
     the "type" of service you can connect to.
 
     Connector Types:
-      - Managed: Built-in connectors published by Microsoft
       - Custom: User-created connectors in the environment
+      - Managed: Built-in connectors published by Microsoft
 
     Examples:
-        copilot connectors list
         copilot connectors list --table
         copilot connectors list --custom --table
         copilot connectors list --managed --table
         copilot connectors list --filter "asana" --table
+        copilot connectors list --raw
     """
     if custom and managed:
         typer.echo("Error: Cannot specify both --custom and --managed", err=True)
@@ -253,17 +269,19 @@ def connectors_list(
 
     try:
         client = get_client()
-        connectors = client.list_connectors()
+        connectors = client.list_connectors(
+            custom_only=custom,
+            managed_only=managed,
+        )
 
         if not connectors:
-            typer.echo("No connectors found.")
+            if custom:
+                typer.echo("No custom connectors found in this environment.")
+            elif managed:
+                typer.echo("No managed connectors found in this environment.")
+            else:
+                typer.echo("No connectors found.")
             return
-
-        # Filter by custom/managed
-        if custom:
-            connectors = [c for c in connectors if is_custom_connector(c)]
-        elif managed:
-            connectors = [c for c in connectors if not is_custom_connector(c)]
 
         # Filter by text
         if filter_text:
@@ -273,10 +291,16 @@ def connectors_list(
                 if filter_lower in c.get("properties", {}).get("displayName", "").lower()
                 or filter_lower in c.get("properties", {}).get("publisher", "").lower()
                 or filter_lower in c.get("name", "").lower()
+                or filter_lower in c.get("_dataverse", {}).get("name", "").lower()
             ]
 
         if not connectors:
             typer.echo("No connectors match the filter criteria.")
+            return
+
+        # Raw output includes all metadata
+        if raw:
+            print_json(connectors)
             return
 
         formatted = [format_connector_for_display(c) for c in connectors]
@@ -616,6 +640,11 @@ def connectors_delete(
         "--env",
         help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
     ),
+    cascade: bool = typer.Option(
+        False,
+        "--cascade",
+        help="Also delete all connections, connection references, and agent tools associated with this connector",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -631,13 +660,29 @@ def connectors_delete(
 
     Warning: Deleting a connector may break flows or agents that depend on it.
 
+    Use --cascade to recursively delete everything associated with this connector:
+      1. Agent connector tools using connections for this connector
+      2. Connection references pointing to connections for this connector
+      3. Connections created for this connector
+      4. The connector itself
+
     Examples:
         copilot connectors delete shared_asana-20test-5fd251d00ef0afcb57-5fe2f45645c919b585
         copilot connectors delete <connector-id> --force
         copilot connectors delete <connector-id> --env Default-xxx
+        copilot connectors delete <connector-id> --cascade
     """
     try:
         client = get_client()
+
+        # Resolve environment ID if not provided
+        if not environment:
+            from ..config import get_config
+            config = get_config()
+            environment = config.environment_id
+            if not environment:
+                typer.echo("Error: Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID.", err=True)
+                raise typer.Exit(1)
 
         # Get connector details to show what will be deleted
         try:
@@ -650,11 +695,40 @@ def connectors_delete(
                 typer.echo(f"Error: Cannot delete managed connector '{connector_name}'", err=True)
                 typer.echo("Only custom connectors can be deleted.", err=True)
                 raise typer.Exit(1)
+                
+            # Valid connector found
+            typer.echo(f"Verified connector: {connector_name}")
 
         except Exception as e:
-            # If we can't get the connector, it might not exist
-            typer.echo(f"Warning: Could not verify connector details: {e}", err=True)
-            connector_name = connector_id
+            # Handle specific error cases
+            error_msg = str(e)
+            
+            # Check for 404 Not Found (often buried in the error message)
+            if "404" in error_msg or "NotFound" in error_msg:
+                typer.echo(f"Error: Connector '{connector_id}' not found in environment '{environment}'.", err=True)
+                if not force:
+                    typer.echo("Aborting. Use --force to attempt deletion anyway.", err=True)
+                    raise typer.Exit(1)
+                typer.echo("Warning: Connector not found, but proceeding due to --force.", err=True)
+                connector_name = connector_id
+
+            # Check for 403 Forbidden
+            elif "403" in error_msg or "Forbidden" in error_msg or "Access Denied" in error_msg:
+                typer.echo(f"Error: Permission denied for connector '{connector_id}'.", err=True)
+                typer.echo("This is likely due to a Data Loss Prevention (DLP) policy blocking access.", err=True)
+                if not force:
+                    typer.echo("Aborting. Use --force to attempt deletion anyway.", err=True)
+                    raise typer.Exit(1)
+                typer.echo("Warning: Permission denied, but proceeding due to --force.", err=True)
+                connector_name = connector_id
+            
+            else:
+                # Unknown error
+                typer.echo(f"Warning: Could not verify connector details: {e}", err=True)
+                if not force:
+                    typer.echo("Aborting. Use --force to attempt deletion anyway.", err=True)
+                    raise typer.Exit(1)
+                connector_name = connector_id
 
         # Confirm deletion unless --force
         if not force:
@@ -670,6 +744,58 @@ def connectors_delete(
             if response != 'y':
                 typer.echo("Cancelled.")
                 raise typer.Exit(0)
+
+        # Handle cascade deletion
+        if cascade:
+            typer.echo("\nCascading deletion requested. Checking for associated resources...")
+            
+            # 1. Get all connections for this connector
+            connections = client.list_connections(connector_id, environment)
+            
+            if connections:
+                typer.echo(f"Found {len(connections)} connection(s). Processing...")
+                
+                for conn in connections:
+                    conn_id = conn.get("name")
+                    conn_name = conn.get("properties", {}).get("displayName", conn_id)
+                    typer.echo(f"\nProcessing connection: {conn_name} ({conn_id})")
+                    
+                    # 2. Delete agent tools for this connection
+                    tools = client.list_tools(connection_id=conn_id)
+                    if tools:
+                        typer.echo(f"  Found {len(tools)} dependent agent tool(s). Deleting...")
+                        for tool in tools:
+                            tool_id = tool.get("botcomponentid")
+                            tool_name = tool.get("name", "Unnamed")
+                            try:
+                                client.remove_tool(tool_id, cleanup_connection_ref=False)
+                                typer.echo(f"  ✓ Deleted tool: {tool_name}")
+                            except Exception as e:
+                                typer.echo(f"  ✗ Failed to delete tool {tool_name}: {e}", err=True)
+                    
+                    # 3. Delete connection references for this connection
+                    refs = client.list_connection_references(connection_id=conn_id)
+                    if refs:
+                        typer.echo(f"  Found {len(refs)} dependent connection reference(s). Deleting...")
+                        for ref in refs:
+                            ref_id = ref.get("connectionreferenceid")
+                            ref_name = ref.get("connectionreferencedisplayname", "Unnamed")
+                            try:
+                                client.delete_connection_reference(ref_id)
+                                typer.echo(f"  ✓ Deleted reference: {ref_name}")
+                            except Exception as e:
+                                typer.echo(f"  ✗ Failed to delete reference {ref_name}: {e}", err=True)
+                    
+                    # 4. Delete the connection
+                    try:
+                        client.delete_connection(conn_id, connector_id, environment)
+                        typer.echo(f"  ✓ Deleted connection: {conn_name}")
+                    except Exception as e:
+                        typer.echo(f"  ✗ Failed to delete connection {conn_name}: {e}", err=True)
+            else:
+                typer.echo("No connections found for this connector.")
+            
+            typer.echo("\nProceeding to delete connector...")
 
         # Delete the connector
         client.delete_custom_connector(connector_id, environment)

@@ -560,17 +560,10 @@ def connections_delete(
         "--env",
         help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
     ),
-    include_connection_references: bool = typer.Option(
+    cascade: bool = typer.Option(
         False,
-        "--include-connection-references",
-        "--include-refs",
-        help="Also delete connection references that point to this connection",
-    ),
-    include_agent_tools: bool = typer.Option(
-        False,
-        "--include-agent-tools",
-        "--include-tools",
-        help="Also delete agent connector tools that use this connection",
+        "--cascade",
+        help="Also delete dependent connection references and agent connector tools",
     ),
     force: bool = typer.Option(
         False,
@@ -585,19 +578,14 @@ def connections_delete(
     Permanently removes a connection from the Power Platform environment.
     This may break flows or agents that depend on this connection.
 
-    Use --include-connection-references to also delete connection references
-    that point to this connection.
-
-    Use --include-agent-tools to also delete agent connector tools that use
-    this connection. This will remove the tools from all agents.
+    Use --cascade to also delete connection references that point to this connection
+    and agent connector tools that use this connection.
 
     Examples:
         copilot connections delete <guid> -c shared_asana
         copilot connections delete <guid> -c shared_office365 --force
         copilot connections delete <guid> -c shared_azureaisearch --env Default-xxx
-        copilot connections delete <guid> -c shared_asana --include-connection-references
-        copilot connections delete <guid> -c shared_asana --include-agent-tools
-        copilot connections delete <guid> -c shared_asana --include-refs --include-tools
+        copilot connections delete <guid> -c shared_asana --cascade
     """
     try:
         client = get_client()
@@ -628,7 +616,7 @@ def connections_delete(
 
         # Check for connection references if requested
         connection_refs_to_delete = []
-        if include_connection_references:
+        if cascade:
             typer.echo("\nChecking for connection references...")
             connection_refs = client.list_connection_references(connection_id=connection_id)
             if connection_refs:
@@ -641,9 +629,42 @@ def connections_delete(
             else:
                 typer.echo("No connection references found for this connection.")
 
+        # Check for agents using this connection for authentication
+        typer.echo("\nChecking for agents using this connection for authentication...")
+        agents_with_auth = []
+        try:
+            all_agents = client.list_agents()
+            for agent in all_agents:
+                auth_config = agent.get("authenticationconfiguration")
+                if auth_config:
+                    import json
+                    try:
+                        auth_data = json.loads(auth_config) if isinstance(auth_config, str) else auth_config
+                        conn_name = auth_data.get("connectionName")
+                        if conn_name == connection_id:
+                            agent_name = agent.get("name", "Unnamed")
+                            agent_id = agent.get("botid", "")
+                            agents_with_auth.append({
+                                "name": agent_name,
+                                "id": agent_id
+                            })
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+
+            if agents_with_auth:
+                typer.echo(f"Found {len(agents_with_auth)} agent(s) using this connection for authentication:")
+                for agent in agents_with_auth:
+                    typer.echo(f"  - {agent['name']} ({agent['id']})")
+                typer.echo("\nWARNING: Deleting this connection will break authentication for these agents!")
+                typer.echo("They will fail with error: 'SignInTopicNeededButNotFound'")
+            else:
+                typer.echo("No agents found using this connection for authentication.")
+        except Exception as e:
+            typer.echo(f"Warning: Could not check for agent authentication dependencies: {e}", err=True)
+
         # Check for agent tools if requested
         tools_to_delete = []
-        if include_agent_tools:
+        if cascade:
             typer.echo("\nChecking for agent connector tools...")
             tools = client.list_tools(connection_id=connection_id)
             if tools:
@@ -659,6 +680,8 @@ def connections_delete(
 
         if not force:
             typer.echo("\nWARNING: This may break flows or agents using this connection.")
+            if agents_with_auth:
+                typer.echo(f"WARNING: {len(agents_with_auth)} agent(s) use this connection for authentication and will fail!")
             if connection_refs_to_delete:
                 typer.echo(f"WARNING: This will also delete {len(connection_refs_to_delete)} connection reference(s).")
             if tools_to_delete:
@@ -696,6 +719,115 @@ def connections_delete(
         # Delete the connection
         client.delete_connection(connection_id, connector_id, environment)
         print_success(f"Connection {connection_id} deleted successfully.")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@app.command("bind")
+def connections_bind(
+    bot_id: str = typer.Argument(
+        ...,
+        help="The bot (agent) ID to bind the connection to (GUID)",
+    ),
+    connector_id: str = typer.Option(
+        ...,
+        "--connector-id",
+        "-c",
+        help="The connector's unique identifier (e.g., shared_asana, shared_asana-20tasks-5fd251d00e-...)",
+    ),
+    connection_id: str = typer.Option(
+        ...,
+        "--connection-id",
+        help="The connection's unique identifier (GUID)",
+    ),
+    environment: Optional[str] = typer.Option(
+        None,
+        "--environment",
+        "--env",
+        help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
+    ),
+):
+    """
+    Bind a connection to a Copilot Studio agent.
+
+    This command associates a connection with a bot, enabling the bot to use
+    the connection's credentials when executing connector tools. This is the
+    same operation performed by clicking "Connect" in the Copilot Studio UI.
+
+    The binding is stored at the bot level and allows the agent's connector
+    tools to authenticate with the external service.
+
+    IMPORTANT - API Permissions:
+        This command uses the Power Platform user-connections API, which requires
+        elevated permissions not available through standard Azure CLI authentication.
+        If you receive a 403 "not authorized" error, you may need to:
+
+        1. Use an Azure App Registration with the "Power Platform API" permissions:
+           - CopilotStudio.Copilots.Invoke (delegated permission)
+           - Or use interactive browser authentication via Copilot Studio UI
+
+        2. Alternatively, bind connections through the Copilot Studio web interface:
+           Settings > Connection Settings > Select connection > Manage
+
+    Requirements:
+        - The bot must exist and have at least one connector tool configured
+        - The connection must exist and be in a "Connected" (authenticated) state
+        - The connector ID must match the connector used by the tool
+        - Appropriate Power Platform API permissions (see above)
+
+    Examples:
+        # Bind an Asana connection to an agent
+        copilot connections bind abc123-bot-id \\
+            --connector-id shared_asana \\
+            --connection-id 60554a33-2140-4add-8a22-b35b400ff016
+
+        # Bind a custom connector connection
+        copilot connections bind abc123-bot-id \\
+            -c shared_asana-20tasks-20api-5fd251d00e-f825669a42b5e533 \\
+            --connection-id 60554a33-2140-4add-8a22-b35b400ff016
+
+        # With explicit environment
+        copilot connections bind abc123-bot-id -c shared_asana \\
+            --connection-id conn-guid --env Default-tenant-id
+    """
+    try:
+        client = get_client()
+
+        # Get environment ID from config if not provided
+        if not environment:
+            config = get_config()
+            environment = config.environment_id
+            if not environment:
+                typer.echo(
+                    "Error: Environment ID not found. Please set DATAVERSE_ENVIRONMENT_ID "
+                    "in your .env file or use --environment.",
+                    err=True
+                )
+                raise typer.Exit(1)
+
+        typer.echo(f"Binding connection to agent...")
+        typer.echo(f"  Agent ID: {bot_id}")
+        typer.echo(f"  Connector: {connector_id}")
+        typer.echo(f"  Connection: {connection_id}")
+        typer.echo("")
+
+        result = client.bind_user_connection(
+            bot_id=bot_id,
+            connector_id=connector_id,
+            connection_id=connection_id,
+            environment_id=environment,
+        )
+
+        print_success("Connection bound to agent successfully!")
+        typer.echo(f"Bot schema: {result.get('bot_schema', '')}")
+        typer.echo(f"Binding key: {result.get('binding_key', '')}")
+        typer.echo("")
+        typer.echo("The agent can now use this connection for connector tool authentication.")
+        typer.echo("Remember to publish the agent to make changes live: copilot agent publish <agent-id>")
 
     except typer.Exit:
         raise

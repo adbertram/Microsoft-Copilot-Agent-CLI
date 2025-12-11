@@ -847,6 +847,53 @@ copilot connections delete <connection-id> -c shared_asana --include-refs --incl
 | `Error` | Connection has an authentication or configuration issue |
 | `Unauthenticated` | Connection needs to be authenticated (complete OAuth flow or check credentials) |
 
+### Bind Connection to Agent
+
+Bind a connection to a Copilot Studio agent, enabling the agent's connector tools to authenticate with external services. This is the same operation performed by clicking "Connect" in the Copilot Studio UI when a connector tool needs authentication.
+
+```bash
+# Bind an Asana connection to an agent
+copilot connections bind <agent-id> \
+    --connector-id shared_asana \
+    --connection-id 60554a33-2140-4add-8a22-b35b400ff016
+
+# Bind a custom connector connection
+copilot connections bind <agent-id> \
+    -c shared_asana-20tasks-20api-5fd251d00e-f825669a42b5e533 \
+    --connection-id 60554a33-2140-4add-8a22-b35b400ff016
+
+# With explicit environment
+copilot connections bind <agent-id> -c shared_asana \
+    --connection-id <conn-guid> --env Default-tenant-id
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `<agent-id>` | **(Required)** The bot (agent) ID to bind the connection to (GUID) |
+| `-c, --connector-id` | **(Required)** The connector's unique identifier (e.g., shared_asana) |
+| `--connection-id` | **(Required)** The connection's unique identifier (GUID) |
+| `--environment, --env` | Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified. |
+
+**Requirements:**
+- The bot must exist and have at least one connector tool configured
+- The connection must exist and be in a "Connected" (authenticated) state
+- The connector ID must match the connector used by the tool
+- Appropriate Power Platform API permissions (see below)
+
+**Important - API Permissions:**
+
+This command uses the Power Platform user-connections API, which requires elevated permissions not available through standard Azure CLI authentication. If you receive a 403 "not authorized" error, you may need to:
+
+1. **Use an Azure App Registration** with the "Power Platform API" permissions:
+   - `CopilotStudio.Copilots.Invoke` (delegated permission)
+   - Configure via: Azure Portal > App Registration > API Permissions > Add permission > APIs my organization uses > Power Platform API
+
+2. **Alternatively**, bind connections through the Copilot Studio web interface:
+   - Navigate to your agent > Settings > Connection Settings > Select connection > Manage
+
+**Note:** After binding, remember to publish the agent to make changes live: `copilot agent publish <agent-id>`
+
 ---
 
 ## Connection Reference Commands
