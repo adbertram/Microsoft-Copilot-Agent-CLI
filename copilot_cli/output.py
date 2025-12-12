@@ -123,13 +123,14 @@ def handle_api_error(error: Exception) -> int:
         print_error("Permission denied. Check that you have access to this resource.")
         return 1
 
-    # Check for rate limiting
-    if "429" in error_str or "rate limit" in error_str.lower():
+    # Check for rate limiting - use patterns that avoid false positives from URLs
+    # (e.g., org1cb52429 contains "429" but is not a rate limit error)
+    if "'429 " in error_str or "429 Too Many" in error_str or "rate limit" in error_str.lower():
         print_error("Rate limit exceeded. Please try again later.")
         return 1
 
-    # Check for validation errors
-    if "400" in error_str or "bad request" in error_str.lower():
+    # Check for validation errors - use patterns that avoid false positives
+    if "'400 " in error_str or "400 Bad Request" in error_str or "bad request" in error_str.lower():
         print_error(f"Invalid request: {error_str}")
         return 1
 
