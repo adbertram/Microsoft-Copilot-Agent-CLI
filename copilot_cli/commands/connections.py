@@ -316,10 +316,11 @@ def connections_create(
         "--env",
         help="Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified.",
     ),
-    no_wait: bool = typer.Option(
+    force: bool = typer.Option(
         False,
-        "--no-wait",
-        help="Don't wait for OAuth authentication to complete (just open browser and exit).",
+        "--force",
+        "-f",
+        help="Skip confirmation prompts and don't wait for OAuth authentication to complete.",
     ),
 ):
     """
@@ -399,14 +400,16 @@ def connections_create(
             typer.echo("     https://global.consent.azure-apim.net/redirect/*")
             typer.echo("     This will work for all connectors you create.")
             typer.echo()
-            typer.echo("Have you registered the redirect URL? (y/N): ", nl=False)
 
-            response = input().strip().lower()
-            if response != 'y':
-                typer.echo()
-                typer.echo("Connection creation cancelled.")
-                typer.echo("Register the redirect URL in your OAuth app and try again.")
-                raise typer.Exit(0)
+            if not force:
+                typer.echo("Have you registered the redirect URL? (y/N): ", nl=False)
+
+                response = input().strip().lower()
+                if response != 'y':
+                    typer.echo()
+                    typer.echo("Connection creation cancelled.")
+                    typer.echo("Register the redirect URL in your OAuth app and try again.")
+                    raise typer.Exit(0)
 
             typer.echo()
 
@@ -437,7 +440,7 @@ def connections_create(
             typer.echo("Opening browser for OAuth authentication...")
             webbrowser.open(consent_link)
 
-            if no_wait:
+            if force:
                 typer.echo(f"Check connection status: copilot connections list -c {connector_id} --table")
                 return
 

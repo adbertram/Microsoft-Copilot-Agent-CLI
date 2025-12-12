@@ -775,6 +775,9 @@ Create a new connection for a connector. Different connectors require different 
 # Creates connection and opens browser for OAuth flow
 copilot connections create -c shared_asana -n "My Asana" --oauth
 
+# OAuth connector for automation (skip prompts, don't wait for auth)
+copilot connections create -c shared_asana -n "My Asana" --oauth --force
+
 # Azure AI Search (API key authentication)
 copilot connections create -c shared_azureaisearch -n "My Search" \
     --parameters '{"endpoint": "https://mysearch.search.windows.net", "api_key": "xxx"}'
@@ -795,7 +798,7 @@ copilot connections create -c shared_sql -n "SQL Server" \
 | `-n, --name` | **(Required)** Display name for the connection |
 | `-p, --parameters` | JSON string of connection parameters (connector-specific) |
 | `--oauth` | Initiate OAuth flow - creates connection and opens browser |
-| `--no-wait` | Don't wait for OAuth authentication to complete |
+| `-f, --force` | Skip confirmation prompts and don't wait for OAuth authentication to complete |
 | `--environment, --env` | Power Platform environment ID. Uses DATAVERSE_ENVIRONMENT_ID if not specified. |
 
 **Authentication Methods:**
