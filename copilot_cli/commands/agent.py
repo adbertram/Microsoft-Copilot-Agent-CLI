@@ -2326,7 +2326,7 @@ def tool_add(
     inputs: Optional[str] = typer.Option(
         None,
         "--inputs",
-        help="Input parameters as JSON string",
+        help="Static input values as JSON, e.g., '{\"workspace\": \"123\"}'. Sets fixed values instead of AI-filled.",
     ),
     outputs: Optional[str] = typer.Option(
         None,
@@ -2397,6 +2397,11 @@ def tool_add(
         # Connector tool with maker's credentials (default)
         copilot agent tool add -a <agent-id> --toolType connector \\
             --id "shared_asana:GetTask" --connection-reference-id <conn-ref-id> --name "Get Task"
+
+        # Connector tool with static input values (pre-filled, not AI-determined)
+        copilot agent tool add -a <agent-id> --toolType connector \\
+            --id "shared_asana:GetTasks" --connection-reference-id <conn-ref-id> \\
+            --inputs '{"project": "1234567890"}' --name "Get Project Tasks"
 
         # Connector tool requiring end-user authentication
         copilot agent tool add -a <agent-id> --toolType connector \\

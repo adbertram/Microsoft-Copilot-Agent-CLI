@@ -1835,6 +1835,10 @@ outputType: {{}}"""
             force=force,
         )
 
+        # Apply static input values if provided
+        if inputs:
+            tool_yaml = self._update_tool_inputs(tool_yaml, inputs)
+
         component_data = {
             "componenttype": 9,  # Topic (V2)
             "name": resolved_name,
