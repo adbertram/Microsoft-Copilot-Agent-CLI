@@ -2119,8 +2119,16 @@ action:
         except Exception as e:
             raise ClientError(f"Failed to validate operation: {e}")
 
-        # Get connector display name for naming
-        connector_display_name = connector_id.replace('shared_', '').title()
+        # Get connector display name for naming - prefer actual name from connector metadata
+        # Custom connectors have long IDs like "shared_asana-20custom-5fd251d00ef0afcb57-..."
+        # which would create schema names exceeding 100 char limit
+        connector_display_name = (
+            connector.get('name') or
+            connector.get('properties', {}).get('displayName') or
+            connector_id.replace('shared_', '').split('-')[0].title()  # Fallback: use first segment
+        )
+        # Remove spaces for schema name (keep spaces for display name)
+        connector_schema_name = connector_display_name.replace(' ', '')
 
         # Get operation display name from swagger
         operation_display_name = operation_details.get('summary', operation_id)
@@ -2133,8 +2141,18 @@ action:
 
         # Generate schema name matching UI pattern: {bot}.action.{Connector}-{OperationId}_{random}
         # Use random 3-char suffix like UI does for uniqueness
+        # Schema name must be <= 100 characters
         random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=3))
-        schema_name = f"{bot_schema}.action.{connector_display_name}-{operation_id}_{random_suffix}"
+        schema_name = f"{bot_schema}.action.{connector_schema_name}-{operation_id}_{random_suffix}"
+
+        # Truncate if still too long (max 100 chars for botcomponent schemaname)
+        if len(schema_name) > 100:
+            # Keep bot_schema.action. prefix and truncate middle
+            prefix = f"{bot_schema}.action."
+            suffix = f"_{random_suffix}"
+            max_middle = 100 - len(prefix) - len(suffix)
+            middle = f"{connector_schema_name[:max_middle//2]}-{operation_id}"[:max_middle]
+            schema_name = f"{prefix}{middle}{suffix}"
 
         # Use swagger description if not provided by user
         resolved_description = description
