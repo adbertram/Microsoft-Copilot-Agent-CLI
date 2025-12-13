@@ -3904,29 +3904,34 @@ def model_set(
         gpt_component = client.get_custom_gpt_component(agent_id)
 
         if not gpt_component:
-            typer.echo(f"No Custom GPT component found for agent {agent_id}", err=True)
-            typer.echo("This agent may not have model configuration enabled.", err=True)
-            raise typer.Exit(1)
+            # Create the Custom GPT component with the model settings
+            typer.echo(f"Creating Custom GPT component for agent...")
+            client.create_custom_gpt_component(
+                agent_id,
+                model_kind=model_kind,
+                model_hint=model_hint,
+            )
+            typer.echo(f"Setting model: {model_hint}")
+        else:
+            component_id = gpt_component.get("botcomponentid")
 
-        component_id = gpt_component.get("botcomponentid")
+            # Get current config for logging and to preserve instructions
+            current_yaml = gpt_component.get("data", "")
+            current_config = client.parse_gpt_component_yaml(current_yaml)
+            current_hint = current_config.get("model_hint", "unknown")
+            current_instructions = current_config.get("instructions")
 
-        # Get current config for logging and to preserve instructions
-        current_yaml = gpt_component.get("data", "")
-        current_config = client.parse_gpt_component_yaml(current_yaml)
-        current_hint = current_config.get("model_hint", "unknown")
-        current_instructions = current_config.get("instructions")
+            typer.echo(f"Updating model: {current_hint} → {model_hint}")
 
-        typer.echo(f"Updating model: {current_hint} → {model_hint}")
+            # Build new YAML with updated model but preserve existing instructions
+            new_yaml = client.build_gpt_component_yaml(
+                instructions=current_instructions,
+                model_kind=model_kind,
+                model_hint=model_hint,
+            )
 
-        # Build new YAML with updated model but preserve existing instructions
-        new_yaml = client.build_gpt_component_yaml(
-            instructions=current_instructions,
-            model_kind=model_kind,
-            model_hint=model_hint,
-        )
-
-        # PATCH the botcomponent with new data
-        client.patch(f"botcomponents({component_id})", {"data": new_yaml})
+            # PATCH the botcomponent with new data
+            client.patch(f"botcomponents({component_id})", {"data": new_yaml})
 
         # Find display name for message
         model_name = model

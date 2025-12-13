@@ -1036,23 +1036,90 @@ beginDialog:
 
         return yaml_output
 
+    def create_custom_gpt_component(
+        self,
+        bot_id: str,
+        instructions: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        model_hint: Optional[str] = None,
+    ) -> str:
+        """
+        Create a Custom GPT botcomponent (componenttype=15) for an agent.
+
+        This component stores the AI configuration (model and instructions)
+        in its 'data' field as YAML.
+
+        Args:
+            bot_id: The bot's unique identifier
+            instructions: Optional system instructions/prompt
+            model_kind: Optional model kind (DefaultModels, PreviewModels, etc.)
+            model_hint: Optional model name hint (GPT4o, GPT5Reasoning, etc.)
+
+        Returns:
+            The created component ID
+
+        Raises:
+            ClientError: If component already exists or creation fails
+        """
+        # Check if component already exists
+        existing = self.get_custom_gpt_component(bot_id)
+        if existing:
+            raise ClientError(f"Custom GPT component already exists for agent {bot_id}")
+
+        # Get bot schema name for generating component schema name
+        bot = self.get_bot(bot_id)
+        bot_schema = bot.get("schemaname", f"cr83c_bot{bot_id[:8]}")
+        schema_name = f"{bot_schema}.gpt.default"
+
+        # Build the YAML data
+        yaml_data = self.build_gpt_component_yaml(
+            instructions=instructions,
+            model_kind=model_kind,
+            model_hint=model_hint,
+        )
+
+        component_data = {
+            "componenttype": 15,  # Custom GPT
+            "name": "Custom GPT",
+            "schemaname": schema_name,
+            "data": yaml_data,
+            "parentbotid@odata.bind": f"/bots({bot_id})"
+        }
+
+        # POST to create the component
+        url = f"{self.api_url}/botcomponents"
+        headers = self._get_headers()
+        response = self._http_client.post(url, headers=headers, json=component_data, timeout=120.0)
+        response.raise_for_status()
+
+        # Extract component ID from OData-EntityId header
+        entity_id = response.headers.get("OData-EntityId", "")
+        if entity_id:
+            match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
+            if match:
+                return match.group(1)
+        return ""
+
     def update_gpt_instructions(self, bot_id: str, instructions: str) -> None:
         """
         Update the system instructions for an agent via the Custom GPT botcomponent.
 
         This preserves existing model settings while updating only the instructions.
+        If the Custom GPT component doesn't exist, it will be created automatically.
 
         Args:
             bot_id: The bot's unique identifier
             instructions: New system instructions/prompt
 
         Raises:
-            ClientError: If no Custom GPT component found or update fails
+            ClientError: If update fails
         """
-        # Get the Custom GPT component
+        # Get the Custom GPT component, create if it doesn't exist
         gpt_component = self.get_custom_gpt_component(bot_id)
         if not gpt_component:
-            raise ClientError(f"No Custom GPT component found for agent {bot_id}")
+            # Create the component with the instructions
+            self.create_custom_gpt_component(bot_id, instructions=instructions)
+            return
 
         component_id = gpt_component.get("botcomponentid")
         current_yaml = gpt_component.get("data", "")
