@@ -375,14 +375,28 @@ def update_agent(
         current_bot = client.get_bot(agent_id)
         agent_name = name if name else current_bot.get("name", agent_id)
 
-        # Update bot settings
-        client.update_bot(
-            bot_id=agent_id,
-            name=name,
-            instructions=agent_instructions,
-            description=description,
-            orchestration=orchestration,
-        )
+        # Track what was updated for success message
+        updates_made = []
+
+        # Update bot settings (name, description, orchestration - NOT instructions)
+        if name or description or orchestration is not None:
+            client.update_bot(
+                bot_id=agent_id,
+                name=name,
+                description=description,
+                orchestration=orchestration,
+            )
+            if name:
+                updates_made.append("name")
+            if description:
+                updates_made.append("description")
+            if orchestration is not None:
+                updates_made.append("orchestration")
+
+        # Update instructions via botcomponent API (the correct API)
+        if agent_instructions:
+            client.update_gpt_instructions(agent_id, agent_instructions)
+            updates_made.append("instructions")
 
         # Update auth settings if provided
         if auth_mode_int is not None or auth_trigger_int is not None:
@@ -391,8 +405,13 @@ def update_agent(
                 mode=auth_mode_int,
                 trigger=auth_trigger_int,
             )
+            updates_made.append("auth")
 
-        print_success(f"Agent '{agent_name}' updated successfully.")
+        if not updates_made:
+            typer.echo("No updates specified.", err=True)
+            raise typer.Exit(1)
+
+        print_success(f"Agent '{agent_name}' updated successfully ({', '.join(updates_made)}).")
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
@@ -3580,3 +3599,355 @@ def auth_list(
 
 # Register auth subgroup
 app.add_typer(auth_app, name="auth")
+
+
+# =============================================================================
+# Model Subcommands
+# =============================================================================
+
+model_app = typer.Typer(help="Manage agent AI model configuration")
+
+# Known models based on Microsoft Copilot Studio documentation
+# https://learn.microsoft.com/en-us/microsoft-copilot-studio/authoring-select-agent-model
+KNOWN_MODELS = [
+    {
+        "id": "gpt-4o",
+        "name": "GPT-4o",
+        "category": "General",
+        "availability": "GA",
+        "cost": "Standard",
+        "description": "General-purpose model. Good for most tasks. Context up to 128K tokens.",
+    },
+    {
+        "id": "gpt-4o-mini",
+        "name": "GPT-4o mini",
+        "category": "General",
+        "availability": "GA",
+        "cost": "Basic",
+        "description": "Cost-effective model. Good for simple tasks. Context up to 128K tokens.",
+    },
+    {
+        "id": "gpt-4.1-mini",
+        "name": "GPT-4.1 mini",
+        "category": "General",
+        "availability": "Default",
+        "cost": "Basic",
+        "description": "Default model. Good for most tasks. Context up to 128K tokens.",
+    },
+    {
+        "id": "gpt-4.1",
+        "name": "GPT-4.1",
+        "category": "General",
+        "availability": "GA",
+        "cost": "Standard",
+        "description": "Superior for complex tasks. Context up to 128K tokens.",
+    },
+    {
+        "id": "gpt-5-chat",
+        "name": "GPT-5 chat",
+        "category": "General",
+        "availability": "Preview",
+        "cost": "Standard",
+        "description": "Highest accuracy and document understanding. Context up to 400K tokens.",
+    },
+    {
+        "id": "gpt-5-reasoning",
+        "name": "GPT-5 reasoning",
+        "category": "Deep",
+        "availability": "Preview",
+        "cost": "Premium",
+        "description": "Optimized for complex reasoning and analysis. Context up to 400K tokens.",
+    },
+    {
+        "id": "claude-sonnet-4.5",
+        "name": "Claude Sonnet 4.5",
+        "category": "General",
+        "availability": "Experimental",
+        "cost": "Standard",
+        "description": "External model from Anthropic. Context up to 200K tokens.",
+    },
+    {
+        "id": "claude-opus-4.1",
+        "name": "Claude Opus 4.1",
+        "category": "Deep",
+        "availability": "Experimental",
+        "cost": "Premium",
+        "description": "External model from Anthropic. Context up to 200K tokens.",
+    },
+]
+
+# Model ID to configuration hint mapping
+# kind values for botcomponent.data YAML (Custom GPT component, componenttype=15):
+#   - DefaultModels: GPT-4o, GPT-4.1, GPT-4.1-mini, GPT-4o-mini
+#   - ChatPreviewModels: GPT-5 Chat
+#   - ReasoningPreviewModels: GPT-5 Reasoning
+#   - ExternalModels: Claude models
+MODEL_CONFIG_MAP = {
+    "gpt-4o": {"kind": "DefaultModels", "modelNameHint": "GPT4o"},
+    "gpt-4o-mini": {"kind": "DefaultModels", "modelNameHint": "GPT4o-mini"},
+    "gpt-4.1-mini": {"kind": "DefaultModels", "modelNameHint": "GPT4.1-mini"},
+    "gpt-4.1": {"kind": "DefaultModels", "modelNameHint": "GPT4.1"},
+    "gpt-5-chat": {"kind": "ChatPreviewModels", "modelNameHint": "GPT5Chat"},
+    "gpt-5-reasoning": {"kind": "ReasoningPreviewModels", "modelNameHint": "GPT5Reasoning"},
+    "claude-sonnet-4.5": {"kind": "ExternalModels", "modelNameHint": "ClaudeSonnet45"},
+    "claude-opus-4.1": {"kind": "ExternalModels", "modelNameHint": "ClaudeOpus41"},
+}
+
+
+def _get_environment_model_settings() -> dict:
+    """Query organization settings to determine model availability."""
+    try:
+        client = get_client()
+        response = client.get("organizations")
+        if response.get("value"):
+            org = response["value"][0]
+            return {
+                "preview_enabled": org.get("paipreviewscenarioenabled", False),
+                "ai_prompts_enabled": org.get("aipromptsenabled", False),
+                "ai_prompts_basic_enabled": org.get("aipromptsbasicmodeltypesenabled", False),
+                "ai_prompts_standard_enabled": org.get("aipromptsstandardmodeltypesenabled", False),
+                "ai_prompts_premium_enabled": org.get("aipromptspremiummodeltypesenabled", False),
+                "ai_prompts_azure_foundry_enabled": org.get("aipromptsazureaifoundrymodeltypesenabled", False),
+            }
+    except Exception:
+        pass
+    return {}
+
+
+@model_app.command("list")
+def model_list(
+    table: bool = typer.Option(
+        False,
+        "--table",
+        "-t",
+        help="Display output as a formatted table instead of JSON",
+    ),
+):
+    """
+    List available AI models for Copilot Studio agents.
+
+    Queries environment settings to determine which model categories are enabled,
+    then shows all known models with their category, availability, cost tier,
+    and whether they're available in your environment.
+
+    Model availability depends on Power Platform admin center settings:
+    - Preview/Experimental models require "Preview and experimental AI models" enabled
+    - External models (Claude) require "External models" enabled
+    - These settings are configured at the environment level by admins
+
+    Use 'copilot agent model get <agent-id>' to see which model an agent uses.
+
+    Examples:
+        copilot agent model list
+        copilot agent model list --table
+    """
+    # Query environment settings
+    env_settings = _get_environment_model_settings()
+
+    # Build model list with availability status
+    models_with_status = []
+    for model in KNOWN_MODELS:
+        model_copy = model.copy()
+        availability = model["availability"]
+
+        # Determine if model is available based on environment settings
+        if availability == "Default" or availability == "GA":
+            model_copy["enabled"] = True
+        elif availability == "Preview":
+            model_copy["enabled"] = env_settings.get("preview_enabled", False)
+        elif availability == "Experimental":
+            # External/experimental models require both preview and premium tiers
+            model_copy["enabled"] = env_settings.get("preview_enabled", False) and env_settings.get("ai_prompts_premium_enabled", False)
+        else:
+            model_copy["enabled"] = False
+
+        models_with_status.append(model_copy)
+
+    if table:
+        # Add enabled status to display
+        for m in models_with_status:
+            m["status"] = "✓ Available" if m.get("enabled") else "- Check Admin"
+        print_table(
+            models_with_status,
+            columns=["id", "name", "category", "availability", "cost", "status"],
+            headers=["ID", "Display Name", "Category", "Availability", "Cost Tier", "Status"],
+        )
+        typer.echo("")
+        typer.echo("Environment Settings (from Dataverse API):")
+        typer.echo(f"  Preview AI Models: {'Enabled' if env_settings.get('preview_enabled') else 'Disabled/Unknown'}")
+        typer.echo(f"  Premium Model Tiers: {'Enabled' if env_settings.get('ai_prompts_premium_enabled') else 'Disabled/Unknown'}")
+    else:
+        # Return simple array of models
+        print_json(models_with_status)
+
+
+@model_app.command("get")
+def model_get(
+    agent_id: str = typer.Argument(..., help="Agent ID (GUID)"),
+):
+    """
+    Get the current AI model configuration for an agent.
+
+    Queries the Custom GPT botcomponent (componenttype=15) to retrieve the
+    actual model configuration from the YAML data field. This is the source
+    of truth that reflects what's shown in the Copilot Studio UI.
+
+    Examples:
+        copilot agent model get <agent-id>
+    """
+    try:
+        client = get_client()
+        bot = client.get_bot(agent_id)
+
+        if not bot:
+            typer.echo(f"Agent not found: {agent_id}", err=True)
+            raise typer.Exit(1)
+
+        # Get the Custom GPT component (componenttype=15) which contains actual model config
+        gpt_component = client.get_custom_gpt_component(agent_id)
+
+        if not gpt_component:
+            typer.echo(f"No Custom GPT component found for agent {agent_id}", err=True)
+            typer.echo("This agent may not have model configuration enabled.", err=True)
+            raise typer.Exit(1)
+
+        # Parse model from YAML data using client method
+        yaml_data = gpt_component.get("data", "")
+        parsed_config = client.parse_gpt_component_yaml(yaml_data)
+
+        model_kind = parsed_config.get("model_kind")
+        model_hint = parsed_config.get("model_hint")
+
+        # Try to match to a known model
+        current_model = "unknown"
+        current_model_name = model_hint or "Unknown"
+
+        if model_hint:
+            for model_id, config in MODEL_CONFIG_MAP.items():
+                if config.get("modelNameHint") == model_hint:
+                    current_model = model_id
+                    # Find display name
+                    for m in KNOWN_MODELS:
+                        if m["id"] == model_id:
+                            current_model_name = m["name"]
+                            break
+                    break
+
+        result = {
+            "agent_id": agent_id,
+            "agent_name": bot.get("name"),
+            "current_model": current_model,
+            "current_model_name": current_model_name,
+            "modelKind": model_kind,
+            "modelNameHint": model_hint,
+            "component_id": gpt_component.get("botcomponentid"),
+            "component_name": gpt_component.get("name"),
+        }
+
+        print_json(result)
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@model_app.command("set")
+def model_set(
+    agent_id: str = typer.Argument(..., help="Agent ID (GUID)"),
+    model: str = typer.Argument(
+        ...,
+        help="Model ID (e.g., gpt-4o, gpt-4.1, gpt-5-reasoning, claude-sonnet-4.5)",
+    ),
+    publish: bool = typer.Option(
+        True,
+        "--publish/--no-publish",
+        help="Publish the agent after updating (default: True)",
+    ),
+):
+    """
+    Set the AI model for an agent.
+
+    Updates the Custom GPT botcomponent (componenttype=15) to use the specified
+    model. This directly modifies the YAML data field which is the source of
+    truth for model configuration in Copilot Studio.
+
+    Available models can be listed with 'copilot agent model list'.
+
+    Note: Preview and experimental models require tenant admin approval.
+    If a model is unavailable, the agent will fall back to the default model.
+
+    Examples:
+        copilot agent model set <agent-id> gpt-5-reasoning
+        copilot agent model set <agent-id> gpt-4.1 --no-publish
+        copilot agent model set <agent-id> claude-sonnet-4.5
+    """
+    # Validate model ID
+    if model not in MODEL_CONFIG_MAP:
+        valid_models = ", ".join(MODEL_CONFIG_MAP.keys())
+        typer.echo(f"Unknown model: {model}", err=True)
+        typer.echo(f"Valid models: {valid_models}", err=True)
+        raise typer.Exit(1)
+
+    model_config = MODEL_CONFIG_MAP[model]
+    model_kind = model_config["kind"]
+    model_hint = model_config["modelNameHint"]
+
+    try:
+        client = get_client()
+        bot = client.get_bot(agent_id)
+
+        if not bot:
+            typer.echo(f"Agent not found: {agent_id}", err=True)
+            raise typer.Exit(1)
+
+        # Get the Custom GPT component (componenttype=15) which contains actual model config
+        gpt_component = client.get_custom_gpt_component(agent_id)
+
+        if not gpt_component:
+            typer.echo(f"No Custom GPT component found for agent {agent_id}", err=True)
+            typer.echo("This agent may not have model configuration enabled.", err=True)
+            raise typer.Exit(1)
+
+        component_id = gpt_component.get("botcomponentid")
+
+        # Get current config for logging and to preserve instructions
+        current_yaml = gpt_component.get("data", "")
+        current_config = client.parse_gpt_component_yaml(current_yaml)
+        current_hint = current_config.get("model_hint", "unknown")
+        current_instructions = current_config.get("instructions")
+
+        typer.echo(f"Updating model: {current_hint} → {model_hint}")
+
+        # Build new YAML with updated model but preserve existing instructions
+        new_yaml = client.build_gpt_component_yaml(
+            instructions=current_instructions,
+            model_kind=model_kind,
+            model_hint=model_hint,
+        )
+
+        # PATCH the botcomponent with new data
+        client.patch(f"botcomponents({component_id})", {"data": new_yaml})
+
+        # Find display name for message
+        model_name = model
+        for m in KNOWN_MODELS:
+            if m["id"] == model:
+                model_name = m["name"]
+                break
+
+        print_success(f"Updated agent model to: {model_name}")
+
+        if publish:
+            typer.echo("Publishing agent...")
+            client.publish_bot(agent_id)
+            print_success("Agent published successfully")
+        else:
+            print_warning("Agent not published. Changes won't be live until published.")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+# Register model subgroup
+app.add_typer(model_app, name="model")

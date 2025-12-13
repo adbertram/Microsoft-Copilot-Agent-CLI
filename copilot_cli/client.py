@@ -870,23 +870,21 @@ beginDialog:
         self,
         bot_id: str,
         name: Optional[str] = None,
-        instructions: Optional[str] = None,
         description: Optional[str] = None,
         orchestration: Optional[bool] = None,
     ) -> None:
         """
-        Update an existing Copilot Studio agent (bot).
+        Update an existing Copilot Studio agent (bot) metadata.
 
         Args:
             bot_id: The bot's unique identifier
             name: New display name for the agent
-            instructions: New system instructions for the agent
             description: New description for the agent
             orchestration: Enable/disable generative AI orchestration
 
         Note:
-            Model selection and web search must be configured via the Copilot Studio portal UI.
-            The API does not support these settings.
+            Instructions must be updated via update_gpt_instructions() which uses
+            the botcomponent API. Model selection must use model_set command.
         """
         # Get current bot to preserve existing configuration
         current_bot = self.get_bot(bot_id)
@@ -907,12 +905,6 @@ beginDialog:
             current_config["settings"]["GenerativeActionsEnabled"] = orchestration
             config_changed = True
 
-        if instructions is not None:
-            if "gPTSettings" not in current_config:
-                current_config["gPTSettings"] = {"$kind": "GPTSettings"}
-            current_config["gPTSettings"]["systemPrompt"] = instructions
-            config_changed = True
-
         if description is not None:
             current_config["description"] = description
             config_changed = True
@@ -924,6 +916,177 @@ beginDialog:
             raise ClientError("No updates provided. Specify at least one field to update.")
 
         self.patch(f"bots({bot_id})", bot_data)
+
+    # =========================================================================
+    # Custom GPT Component Methods (Model & Instructions via botcomponent)
+    # =========================================================================
+
+    def get_custom_gpt_component(self, bot_id: str) -> Optional[dict]:
+        """
+        Get the Custom GPT botcomponent (componenttype=15) for an agent.
+
+        This component contains the actual AI configuration (model and instructions)
+        in its 'data' field as YAML with structure:
+            kind: GptComponentMetadata
+            instructions: <system instructions>
+            aISettings:
+              model:
+                kind: <MODEL_KIND>
+                modelNameHint: <MODEL_HINT>
+            tools:
+
+        Args:
+            bot_id: The bot's unique identifier (GUID)
+
+        Returns:
+            The Custom GPT component dict if found, None otherwise.
+            Contains: botcomponentid, name, data, schemaname
+        """
+        result = self.get(
+            f"botcomponents?$filter=_parentbotid_value eq {bot_id} and componenttype eq 15"
+            "&$select=botcomponentid,name,data,schemaname"
+        )
+        components = result.get("value", [])
+        return components[0] if components else None
+
+    def parse_gpt_component_yaml(self, yaml_data: str) -> dict:
+        """
+        Parse the Custom GPT component YAML data.
+
+        Args:
+            yaml_data: The YAML string from botcomponent.data
+
+        Returns:
+            Dict with parsed fields: instructions, model_kind, model_hint
+        """
+        import yaml as yaml_lib
+
+        result = {
+            "instructions": None,
+            "model_kind": None,
+            "model_hint": None,
+        }
+        if not yaml_data:
+            return result
+
+        try:
+            parsed = yaml_lib.safe_load(yaml_data)
+            if parsed and isinstance(parsed, dict):
+                result["instructions"] = parsed.get("instructions")
+                ai_settings = parsed.get("aISettings", {})
+                model = ai_settings.get("model", {})
+                result["model_kind"] = model.get("kind")
+                result["model_hint"] = model.get("modelNameHint")
+        except Exception:
+            # Fallback: parse with regex for robustness
+            import re
+
+            instr_match = re.search(r'instructions:\s*(.+?)(?:\n(?=\w)|$)', yaml_data, re.DOTALL)
+            kind_match = re.search(r'kind:\s*(\S+)', yaml_data)
+            hint_match = re.search(r'modelNameHint:\s*(\S+)', yaml_data)
+
+            if instr_match:
+                result["instructions"] = instr_match.group(1).strip()
+            if kind_match:
+                result["model_kind"] = kind_match.group(1)
+            if hint_match:
+                result["model_hint"] = hint_match.group(1)
+
+        return result
+
+    def build_gpt_component_yaml(
+        self,
+        instructions: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        model_hint: Optional[str] = None,
+    ) -> str:
+        """
+        Build YAML data for the Custom GPT component.
+
+        Args:
+            instructions: System instructions/prompt (can be multiline)
+            model_kind: Model kind (DefaultModels, ChatPreviewModels, etc.)
+            model_hint: Model name hint (GPT4o, GPT5Reasoning, etc.)
+
+        Returns:
+            YAML string for botcomponent.data field
+        """
+        import yaml as yaml_lib
+
+        data = {"kind": "GptComponentMetadata"}
+
+        if instructions:
+            data["instructions"] = instructions
+
+        if model_kind and model_hint:
+            data["aISettings"] = {
+                "model": {
+                    "kind": model_kind,
+                    "modelNameHint": model_hint,
+                }
+            }
+
+        data["tools"] = None  # Empty tools section
+
+        # Use yaml library to properly handle multiline strings
+        yaml_output = yaml_lib.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+        # Clean up 'tools: null' to just 'tools:'
+        yaml_output = yaml_output.replace("tools: null", "tools:")
+
+        return yaml_output
+
+    def update_gpt_instructions(self, bot_id: str, instructions: str) -> None:
+        """
+        Update the system instructions for an agent via the Custom GPT botcomponent.
+
+        This preserves existing model settings while updating only the instructions.
+
+        Args:
+            bot_id: The bot's unique identifier
+            instructions: New system instructions/prompt
+
+        Raises:
+            ClientError: If no Custom GPT component found or update fails
+        """
+        # Get the Custom GPT component
+        gpt_component = self.get_custom_gpt_component(bot_id)
+        if not gpt_component:
+            raise ClientError(f"No Custom GPT component found for agent {bot_id}")
+
+        component_id = gpt_component.get("botcomponentid")
+        current_yaml = gpt_component.get("data", "")
+
+        # Parse existing settings to preserve model config
+        current_config = self.parse_gpt_component_yaml(current_yaml)
+
+        # Build new YAML with updated instructions but preserved model
+        new_yaml = self.build_gpt_component_yaml(
+            instructions=instructions,
+            model_kind=current_config.get("model_kind"),
+            model_hint=current_config.get("model_hint"),
+        )
+
+        # PATCH the botcomponent
+        self.patch(f"botcomponents({component_id})", {"data": new_yaml})
+
+    def get_gpt_instructions(self, bot_id: str) -> Optional[str]:
+        """
+        Get the current system instructions for an agent.
+
+        Args:
+            bot_id: The bot's unique identifier
+
+        Returns:
+            The current instructions, or None if not set
+        """
+        gpt_component = self.get_custom_gpt_component(bot_id)
+        if not gpt_component:
+            return None
+
+        current_yaml = gpt_component.get("data", "")
+        config = self.parse_gpt_component_yaml(current_yaml)
+        return config.get("instructions")
 
     # =========================================================================
     # Authentication Methods
