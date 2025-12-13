@@ -139,6 +139,12 @@ def remove_agent(
         "-f",
         help="Skip confirmation prompt",
     ),
+    cascade: bool = typer.Option(
+        False,
+        "--cascade",
+        "-c",
+        help="Delete all dependent components (topics, tools, etc.) before deleting the agent",
+    ),
 ):
     """
     Remove (delete) a Copilot Studio agent.
@@ -146,6 +152,7 @@ def remove_agent(
     Examples:
         copilot agent remove fcef595a-30bb-f011-bbd3-000d3a8ba54e
         copilot agent remove fcef595a-30bb-f011-bbd3-000d3a8ba54e --force
+        copilot agent remove fcef595a-30bb-f011-bbd3-000d3a8ba54e --cascade --force
     """
     try:
         client = get_client()
@@ -160,11 +167,78 @@ def remove_agent(
                 typer.echo("Aborted.")
                 raise typer.Exit(0)
 
-        client.delete_bot(agent_id)
-        print_success(f"Agent '{agent_name}' deleted successfully.")
+        # If cascade, delete all components first
+        if cascade:
+            _delete_agent_components(client, agent_id)
+
+        try:
+            client.delete_bot(agent_id)
+            print_success(f"Agent '{agent_name}' deleted successfully.")
+        except Exception as e:
+            error_msg = str(e)
+            # Check if error is about referenced components
+            if "referenced by" in error_msg and "other components" in error_msg:
+                # List the dependent components
+                typer.echo(f"\nAgent '{agent_name}' cannot be deleted due to dependent components:\n")
+                components = client.get_bot_components(agent_id)
+
+                if components:
+                    # Group by component type
+                    topics = [c for c in components if c.get("componenttype") in (0, 9)]
+                    tools = [c for c in components if "InvokeConnectedAgentTaskAction" in (c.get("schemaname") or "")]
+                    other = [c for c in components if c not in topics and c not in tools]
+
+                    if topics:
+                        typer.echo(f"  Topics ({len(topics)}):")
+                        for t in topics[:10]:  # Show first 10
+                            typer.echo(f"    - {t.get('name', 'Unknown')}")
+                        if len(topics) > 10:
+                            typer.echo(f"    ... and {len(topics) - 10} more")
+
+                    if tools:
+                        typer.echo(f"\n  Tools ({len(tools)}):")
+                        for t in tools[:10]:
+                            typer.echo(f"    - {t.get('name', 'Unknown')}")
+                        if len(tools) > 10:
+                            typer.echo(f"    ... and {len(tools) - 10} more")
+
+                    if other:
+                        typer.echo(f"\n  Other components ({len(other)}):")
+                        for c in other[:10]:
+                            typer.echo(f"    - {c.get('name', 'Unknown')} (type: {c.get('componenttype')})")
+                        if len(other) > 10:
+                            typer.echo(f"    ... and {len(other) - 10} more")
+
+                typer.echo(f"\nTo delete the agent and all its components, use:")
+                typer.echo(f"  copilot agent remove {agent_id} --cascade --force")
+                raise typer.Exit(1)
+            else:
+                raise
+    except typer.Exit:
+        raise
     except Exception as e:
         exit_code = handle_api_error(e)
         raise typer.Exit(exit_code)
+
+
+def _delete_agent_components(client, agent_id: str) -> None:
+    """Delete all components for an agent before deletion."""
+    components = client.get_bot_components(agent_id)
+    if not components:
+        return
+
+    typer.echo(f"Deleting {len(components)} component(s)...")
+    deleted = 0
+    for comp in components:
+        comp_id = comp.get("botcomponentid")
+        comp_name = comp.get("name", "Unknown")
+        if comp_id:
+            try:
+                client.delete(f"botcomponents({comp_id})")
+                deleted += 1
+            except Exception:
+                pass  # Some components may fail, continue with others
+    typer.echo(f"Deleted {deleted} component(s).")
 
 
 @app.command("publish")
