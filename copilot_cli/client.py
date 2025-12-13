@@ -88,11 +88,20 @@ class DataverseClient:
         headers = self._get_headers()
         headers.update(kwargs.pop("headers", {}))
 
+        return_id = kwargs.pop("return_id", False)
+
         try:
             response = self._http_client.request(method, url, headers=headers, **kwargs)
             response.raise_for_status()
 
             if response.status_code == 204:
+                # Extract entity ID from OData-EntityId header if requested
+                if return_id:
+                    odata_id = response.headers.get("OData-EntityId", "")
+                    # Format: https://.../api/data/v9.2/bots(guid)
+                    if "(" in odata_id and ")" in odata_id:
+                        entity_id = odata_id.split("(")[-1].rstrip(")")
+                        return {"id": entity_id}
                 return None
 
             return response.json()
@@ -112,9 +121,19 @@ class DataverseClient:
         """Make a GET request."""
         return self._request("GET", endpoint, params=params)
 
-    def post(self, endpoint: str, data: dict) -> Any:
-        """Make a POST request."""
-        return self._request("POST", endpoint, json=data)
+    def post(self, endpoint: str, data: dict, return_id: bool = False) -> Any:
+        """
+        Make a POST request.
+
+        Args:
+            endpoint: API endpoint
+            data: Request body data
+            return_id: If True and response is 204, extract entity ID from OData-EntityId header
+
+        Returns:
+            Response JSON or dict with 'id' key if return_id=True and 204 response
+        """
+        return self._request("POST", endpoint, json=data, return_id=return_id)
 
     def patch(self, endpoint: str, data: dict) -> Any:
         """Make a PATCH request."""
@@ -250,6 +269,8 @@ class DataverseClient:
 
         filter_str = " and ".join(filters)
         result = self.get(f"botcomponents?$filter={filter_str}&$orderby=name")
+        if not result:
+            return []
         topics = result.get("value", [])
 
         if not include_tools:
@@ -799,7 +820,51 @@ beginDialog:
             "configuration": json.dumps(config, indent=2),
         }
 
-        return self.post("bots", bot_data)
+        result = self.post("bots", bot_data, return_id=True)
+
+        # Delete all default topics created by the template
+        bot_id = None
+        if result:
+            # Result can be full response or just {"id": "..."} from 204 response
+            bot_id = result.get("botid") or result.get("id")
+
+        if bot_id:
+            # Wait for topics to be provisioned - can take several seconds
+            import time
+
+            # Poll until topics appear (max 30 seconds)
+            for _ in range(15):
+                time.sleep(2)
+                topics = self.list_topics(bot_id)
+                if len(topics) >= 10:  # Expect ~13 default topics
+                    break
+
+            self.delete_all_topics(bot_id)
+
+        return result
+
+    def delete_all_topics(self, bot_id: str) -> int:
+        """
+        Delete all topics for a bot.
+
+        Args:
+            bot_id: The bot's unique identifier
+
+        Returns:
+            Number of topics deleted
+        """
+        topics = self.list_topics(bot_id)
+        deleted_count = 0
+        for topic in topics:
+            component_id = topic.get("botcomponentid")
+            if component_id:
+                try:
+                    self.delete_topic(component_id)
+                    deleted_count += 1
+                except Exception:
+                    # Some topics may fail to delete (e.g., if referenced)
+                    pass
+        return deleted_count
 
     def update_bot(
         self,
