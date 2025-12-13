@@ -59,6 +59,7 @@ def format_connector_for_display(connector: dict) -> dict:
         "publisher": props.get("publisher") or "",
         "tier": props.get("tier") or "N/A",
         "description": description,
+        "source": connector.get("_source", ""),
     }
 
 
@@ -311,8 +312,8 @@ def connectors_list(
         if table:
             print_table(
                 formatted,
-                columns=["name", "type", "publisher", "tier", "id"],
-                headers=["Name", "Type", "Publisher", "Tier", "ID"],
+                columns=["name", "type", "publisher", "tier", "source", "id"],
+                headers=["Name", "Type", "Publisher", "Tier", "Source", "ID"],
             )
         else:
             print_json(formatted)
@@ -417,6 +418,18 @@ def connectors_get(
         "-r",
         help="Output raw JSON connector definition (ignores --table)",
     ),
+    openapi: bool = typer.Option(
+        False,
+        "--openapi",
+        "--swagger",
+        help="Output the full OpenAPI/Swagger definition (JSON format)",
+    ),
+    output_file: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write OpenAPI definition to file (use with --openapi)",
+    ),
 ):
     """
     Get details for a specific connector including available operations.
@@ -429,10 +442,34 @@ def connectors_get(
         copilot connectors get shared_asana --table --include-deprecated
         copilot connectors get shared_asana --table --include-internal
         copilot connectors get shared_office365 --raw
+        copilot connectors get shared_asana --openapi
+        copilot connectors get shared_asana --openapi --output ./asana-spec.json
     """
     try:
         client = get_client()
         connector = client.get_connector(connector_id)
+
+        # OpenAPI/Swagger output
+        if openapi:
+            swagger = connector.get("properties", {}).get("swagger", {})
+            if not swagger:
+                typer.echo("Error: No OpenAPI/Swagger definition found for this connector.", err=True)
+                raise typer.Exit(1)
+
+            if output_file:
+                # Write to file
+                output_path = Path(output_file)
+                try:
+                    output_path.write_text(json.dumps(swagger, indent=2))
+                    props = connector.get("properties", {})
+                    typer.echo(f"OpenAPI definition for '{props.get('displayName', connector_id)}' written to: {output_file}")
+                except Exception as e:
+                    typer.echo(f"Error writing to file: {e}", err=True)
+                    raise typer.Exit(1)
+            else:
+                # Output to stdout
+                print_json(swagger)
+            return
 
         # Raw output - full JSON
         if raw:
@@ -771,10 +808,159 @@ def connectors_update(
             script_operations=ops_list,
         )
 
-        print_success(f"Connector '{connector_id}' updated successfully!")
         typer.echo(f"Display Name: {result.get('display_name', 'N/A')}")
+        print_success(f"Connector '{connector_id}' updated successfully!")
         if result.get("script_uploaded"):
             typer.echo(f"Custom Code: Updated ({Path(script_file).name})")
+
+        # Warn about connection refresh when swagger is updated
+        if swagger_file:
+            typer.echo("")
+            typer.secho(
+                "⚠️  WARNING: Existing connections may cache the old schema.",
+                fg=typer.colors.YELLOW,
+                bold=True
+            )
+            typer.echo("   To use new/modified operations, you may need to:")
+            typer.echo("   1. Delete and recreate connections for this connector")
+            typer.echo("   2. Update connection references with the new connection ID")
+            typer.echo("")
+            typer.echo("   Commands:")
+            typer.echo(f"   copilot connections list --connector-id {connector_id} --table")
+            typer.echo(f"   copilot connections delete <connection-id> -c {connector_id} --force")
+            typer.echo(f"   copilot connections create -c {connector_id} -n \"<name>\" --oauth")
+            typer.echo(f"   copilot connection-references update <ref-id> --connection-id <new-connection-id>")
+
+    except Exception as e:
+        exit_code = handle_api_error(e)
+        raise typer.Exit(exit_code)
+
+
+@app.command("register")
+def connectors_register(
+    connector_id: str = typer.Argument(
+        ...,
+        help="The connector's unique identifier (e.g., shared_asana-20custom-...)",
+    ),
+    swagger_file: str = typer.Option(
+        ...,
+        "--swagger-file",
+        "-f",
+        help="Path to the original OpenAPI 2.0 (Swagger) definition file used to create the connector",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip confirmation prompt",
+    ),
+):
+    """
+    Register a custom connector in Dataverse.
+
+    Custom connectors created via Power Apps API are not automatically registered
+    in Dataverse. This command creates a record in the Dataverse connector table
+    so that connection references can properly link to the connector via
+    CustomConnectorId.
+
+    This is required for connector operations to be properly discovered by
+    Copilot Studio agents. Without Dataverse registration, you may see
+    "ConnectorOperationNotFound" errors.
+
+    IMPORTANT: You must provide the ORIGINAL OpenAPI schema file that was used
+    to create the connector. The schema stored in Power Apps is modified and
+    cannot be used directly.
+
+    Examples:
+        copilot connectors register shared_asana-20custom-... --swagger-file ./connector.json
+        copilot connectors register <connector-id> -f ./api.json --force
+    """
+    try:
+        client = get_client()
+
+        # Read and parse the original OpenAPI file
+        swagger_path = Path(swagger_file)
+        if not swagger_path.exists():
+            typer.echo(f"Error: File not found: {swagger_file}", err=True)
+            raise typer.Exit(1)
+
+        try:
+            file_content = swagger_path.read_text()
+            try:
+                swagger = json.loads(file_content)
+            except json.JSONDecodeError:
+                try:
+                    swagger = yaml.safe_load(file_content)
+                except yaml.YAMLError as yaml_err:
+                    typer.echo(f"Error: Invalid JSON/YAML format: {yaml_err}", err=True)
+                    raise typer.Exit(1)
+        except Exception as e:
+            typer.echo(f"Error reading file: {e}", err=True)
+            raise typer.Exit(1)
+
+        # Get connector details from Power Apps API
+        typer.echo(f"Looking up connector: {connector_id}...")
+        connector = client.get_connector(connector_id)
+
+        props = connector.get("properties", {})
+        display_name = props.get("displayName", connector_id)
+        description = props.get("description", "")
+
+        # Check if already registered in Dataverse
+        dataverse = connector.get("_dataverse", {})
+        existing_entity_id = dataverse.get("connectorid")
+
+        if existing_entity_id:
+            typer.echo(f"Connector '{display_name}' is already registered in Dataverse.")
+            typer.echo(f"Entity ID: {existing_entity_id}")
+            return
+
+        source = connector.get("_source", "unknown")
+        if source != "powerapps":
+            typer.echo(f"Connector source: {source}")
+            typer.echo("Only Power Apps connectors need to be registered in Dataverse.")
+            typer.echo("This connector may already be properly registered.")
+            if not force:
+                typer.echo("Use --force to attempt registration anyway.")
+                raise typer.Exit(0)
+
+        # Confirm registration
+        if not force:
+            typer.echo(f"\nConnector: {display_name}")
+            typer.echo(f"ID: {connector_id}")
+            typer.echo(f"Source: {source}")
+            typer.echo()
+            typer.echo("This will register the connector in Dataverse, enabling proper")
+            typer.echo("connection reference linking for Copilot Studio agents.")
+            typer.echo()
+            typer.echo("Continue? (y/N): ", nl=False)
+
+            response = input().strip().lower()
+            if response != 'y':
+                typer.echo("Cancelled.")
+                raise typer.Exit(0)
+
+        # Register in Dataverse
+        typer.echo("\nRegistering connector in Dataverse...")
+        entity_id = client.register_connector_in_dataverse(
+            connector_id=connector_id,
+            display_name=display_name,
+            openapi_definition=swagger,
+            description=description,
+        )
+
+        if entity_id:
+            print_success(f"Connector '{display_name}' registered successfully!")
+            typer.echo(f"Dataverse Entity ID: {entity_id}")
+            typer.echo()
+            typer.echo("Next steps:")
+            typer.echo("1. Recreate the connection reference to link it properly:")
+            typer.echo(f"   copilot connection-references list --table")
+            typer.echo(f"   copilot connection-references remove <ref-id> --force")
+            typer.echo(f"   copilot connection-references create --name \"<name>\" --connection-id <conn-id>")
+        else:
+            typer.echo("Failed to register connector in Dataverse.", err=True)
+            typer.echo("This may be a permissions issue or the connector schema may be invalid.", err=True)
+            raise typer.Exit(1)
 
     except Exception as e:
         exit_code = handle_api_error(e)
@@ -902,45 +1088,51 @@ def connectors_delete(
         # Handle cascade deletion
         if cascade:
             typer.echo("\nCascading deletion requested. Checking for associated resources...")
-            
-            # 1. Get all connections for this connector
+
+            # 1. Find and delete all agent connector tools using this connector
+            all_connector_tools = client.list_tools(category='connector')
+            # Filter tools that use this connector (connector_id appears in connectionReference path)
+            matching_tools = [
+                tool for tool in all_connector_tools
+                if connector_id in (tool.get("data") or "")
+            ]
+
+            if matching_tools:
+                typer.echo(f"Found {len(matching_tools)} agent tool(s) using this connector. Deleting...")
+                for tool in matching_tools:
+                    tool_id = tool.get("botcomponentid")
+                    tool_name = tool.get("name") or tool.get("schemaname") or tool_id
+                    try:
+                        # Connection refs are deleted separately in cascade logic below
+                        client.remove_tool(tool_id)
+                        typer.echo(f"  ✓ Deleted tool: {tool_name}")
+                    except Exception as e:
+                        typer.echo(f"  ✗ Failed to delete tool {tool_name}: {e}", err=True)
+            else:
+                typer.echo("No agent tools found using this connector.")
+
+            # 2. Delete all connection references for this connector (by connector_id)
+            refs = client.list_connection_references(connector_id=connector_id)
+            if refs:
+                typer.echo(f"Found {len(refs)} connection reference(s). Deleting...")
+                for ref in refs:
+                    ref_id = ref.get("connectionreferenceid")
+                    ref_name = ref.get("connectionreferencedisplayname", "Unnamed")
+                    try:
+                        client.delete_connection_reference(ref_id)
+                        typer.echo(f"  ✓ Deleted reference: {ref_name}")
+                    except Exception as e:
+                        typer.echo(f"  ✗ Failed to delete reference {ref_name}: {e}", err=True)
+            else:
+                typer.echo("No connection references found for this connector.")
+
+            # 3. Get all connections for this connector and delete them
             connections = client.list_connections(connector_id, environment)
-            
             if connections:
-                typer.echo(f"Found {len(connections)} connection(s). Processing...")
-                
+                typer.echo(f"Found {len(connections)} connection(s). Deleting...")
                 for conn in connections:
                     conn_id = conn.get("name")
                     conn_name = conn.get("properties", {}).get("displayName", conn_id)
-                    typer.echo(f"\nProcessing connection: {conn_name} ({conn_id})")
-                    
-                    # 2. Delete agent tools for this connection
-                    tools = client.list_tools(connection_id=conn_id)
-                    if tools:
-                        typer.echo(f"  Found {len(tools)} dependent agent tool(s). Deleting...")
-                        for tool in tools:
-                            tool_id = tool.get("botcomponentid")
-                            tool_name = tool.get("name", "Unnamed")
-                            try:
-                                client.remove_tool(tool_id, cleanup_connection_ref=False)
-                                typer.echo(f"  ✓ Deleted tool: {tool_name}")
-                            except Exception as e:
-                                typer.echo(f"  ✗ Failed to delete tool {tool_name}: {e}", err=True)
-                    
-                    # 3. Delete connection references for this connection
-                    refs = client.list_connection_references(connection_id=conn_id)
-                    if refs:
-                        typer.echo(f"  Found {len(refs)} dependent connection reference(s). Deleting...")
-                        for ref in refs:
-                            ref_id = ref.get("connectionreferenceid")
-                            ref_name = ref.get("connectionreferencedisplayname", "Unnamed")
-                            try:
-                                client.delete_connection_reference(ref_id)
-                                typer.echo(f"  ✓ Deleted reference: {ref_name}")
-                            except Exception as e:
-                                typer.echo(f"  ✗ Failed to delete reference {ref_name}: {e}", err=True)
-                    
-                    # 4. Delete the connection
                     try:
                         client.delete_connection(conn_id, connector_id, environment)
                         typer.echo(f"  ✓ Deleted connection: {conn_name}")
@@ -948,7 +1140,7 @@ def connectors_delete(
                         typer.echo(f"  ✗ Failed to delete connection {conn_name}: {e}", err=True)
             else:
                 typer.echo("No connections found for this connector.")
-            
+
             typer.echo("\nProceeding to delete connector...")
 
         # Delete the connector

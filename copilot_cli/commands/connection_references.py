@@ -92,6 +92,22 @@ def connection_references_create(
     try:
         client = get_client()
 
+        # Check for existing connection references with the same display name
+        typer.echo("Checking for existing connection references...")
+        existing_refs = client.list_connection_references()
+        for ref in existing_refs:
+            existing_name = ref.get("connectionreferencedisplayname", "")
+            if existing_name.lower() == name.lower():
+                typer.echo(
+                    f"Error: A connection reference with name '{existing_name}' already exists.\n"
+                    f"  ID: {ref.get('connectionreferenceid')}\n"
+                    f"  Logical Name: {ref.get('connectionreferencelogicalname')}\n"
+                    f"\nUse 'copilot connection-references update' to modify it, or "
+                    "'copilot connection-references remove' to delete it first.",
+                    err=True,
+                )
+                raise typer.Exit(1)
+
         # Look up the connection to get its connector ID
         typer.echo(f"Looking up connection '{connection_id}'...")
         connection = client.get_connection(connection_id)

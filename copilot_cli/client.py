@@ -1531,66 +1531,14 @@ outputType: {{}}"""
                 return match.group(1)
         return ""
 
-    def remove_tool(self, component_id: str, cleanup_connection_ref: bool = True) -> None:
+    def remove_tool(self, component_id: str) -> None:
         """
         Remove a tool from a bot.
 
-        For connector tools, this also removes the associated bot-specific
-        connection reference if it's not used by any other tools.
-
         Args:
             component_id: The tool component's unique identifier
-            cleanup_connection_ref: Whether to clean up unused connection references (default True)
         """
-        import yaml as yaml_lib
-
-        headers_req = self._get_headers()
-        conn_ref_id = None
-        conn_ref_logical_name = None
-
-        # For connector tools, check if we need to clean up the connection reference
-        if cleanup_connection_ref:
-            try:
-                tool = self.get(f"botcomponents({component_id})")
-                schema_name = tool.get("schemaname", "") or ""
-                data = tool.get("data", "") or ""
-
-                # Check if this is a connector tool
-                if ".action." in schema_name and data:
-                    parsed_data = yaml_lib.safe_load(data) or {}
-                    actions = parsed_data.get("actions") or []
-                    if actions:
-                        action = actions[0]
-                        conn_ref_logical_name = action.get("connectionReferenceLogicalName", "")
-
-                        if conn_ref_logical_name:
-                            # Get the connection reference ID
-                            check_url = f"{self.api_url}/connectionreferences?$filter=connectionreferencelogicalname eq '{conn_ref_logical_name}'&$select=connectionreferenceid"
-                            check_response = self._http_client.get(check_url, headers=headers_req, timeout=60.0)
-                            check_response.raise_for_status()
-                            refs = check_response.json().get("value", [])
-                            if refs:
-                                conn_ref_id = refs[0].get("connectionreferenceid", "")
-            except Exception:
-                pass  # Don't fail tool removal if connection ref lookup fails
-
-        # Delete the tool
         self.delete(f"botcomponents({component_id})")
-
-        # Clean up connection reference if it exists and is no longer used
-        if conn_ref_id and conn_ref_logical_name:
-            try:
-                # Check if any other botcomponents still reference this connection reference
-                assoc_url = f"{self.api_url}/connectionreferences({conn_ref_id})/botcomponent_connectionreference?$select=botcomponentid&$top=1"
-                assoc_response = self._http_client.get(assoc_url, headers=headers_req, timeout=60.0)
-                assoc_response.raise_for_status()
-                remaining = assoc_response.json().get("value", [])
-
-                if not remaining:
-                    # No other tools using this connection reference, safe to delete
-                    self.delete(f"connectionreferences({conn_ref_id})")
-            except Exception:
-                pass  # Don't fail if cleanup fails - the tool was already removed
 
     def update_tool(
         self,
@@ -1770,22 +1718,26 @@ outputType: {{}}"""
         bot = self.get_bot(bot_id)
         bot_schema = bot.get("schemaname", f"cr83c_bot{bot_id[:8]}")
 
-        # Build connection reference path if provided
+        # Build connection reference path from provided connection reference
         connection_reference_path = None
+        runtime_connection_reference_id = None  # Will store the ID for M2M association
         if connection_reference_id:
             try:
                 conn_ref = self.get_connection_reference(connection_reference_id)
 
-                # Always construct the path: {bot_schema}.{connector_id}.{connection_id}
-                # Note: connectionreferencelogicalname is NOT the runtime path format -
-                # it's just a short Dataverse entity identifier (e.g., "cr_asana_tasks___projects").
-                # The runtime expects the full path format that includes bot schema, connector ID,
-                # and connection ID separated by dots.
+                # Use the existing connection reference's logical name directly
+                # The runtime uses this logical name to look up the connection reference
+                logical_name = conn_ref.get("connectionreferencelogicalname")
                 connection_id = conn_ref.get("connectionid")
                 connector_id_raw = conn_ref.get("connectorid", "")
 
                 # Remove /providers/Microsoft.PowerApps/apis/ prefix if present
                 connector_id = connector_id_raw.replace("/providers/Microsoft.PowerApps/apis/", "")
+
+                if not logical_name:
+                    raise ClientError(
+                        f"Connection reference '{connection_reference_id}' is missing logical name."
+                    )
 
                 if not connection_id or not connector_id:
                     raise ClientError(
@@ -1794,9 +1746,15 @@ outputType: {{}}"""
                         f"Connector ID: {connector_id}"
                     )
 
-                # Build the full path: {bot_schema}.{connector_id}.{connection_id}
-                connection_reference_path = f"{bot_schema}.{connector_id}.{connection_id}"
+                # Use the connection reference logical name directly
+                # The runtime looks up connection references by logical name, not by path
+                connection_reference_path = logical_name
 
+                # Store the existing connection reference ID for M2M association
+                runtime_connection_reference_id = conn_ref.get("connectionreferenceid")
+
+            except ClientError:
+                raise
             except Exception as e:
                 raise ClientError(
                     f"Connection reference '{connection_reference_id}' not found.\n"
@@ -1861,6 +1819,12 @@ outputType: {{}}"""
             match = re.search(r'botcomponents\(([^)]+)\)', entity_id)
             if match:
                 component_id = match.group(1)
+
+        # CRITICAL: Associate the bot component with the connection reference (M2M relationship)
+        # This is REQUIRED for connector tools to resolve the connection at runtime.
+        # Without this association, the runtime cannot find the connection reference.
+        if runtime_connection_reference_id and component_id:
+            self._associate_botcomponent_connectionreference(component_id, runtime_connection_reference_id)
 
         return component_id
 
@@ -2433,7 +2397,7 @@ schemaName: {schema_name}
                 )
 
         all_connectors = []
-        seen_connector_ids = set()
+        connector_by_id = {}  # Track connectors by ID for source merging
 
         # Get custom connectors from Dataverse (unless managed_only)
         if not managed_only:
@@ -2441,16 +2405,23 @@ schemaName: {schema_name}
             for conn in custom_connectors:
                 conn_id = conn.get("name", "")
                 if conn_id:
-                    seen_connector_ids.add(conn_id)
+                    connector_by_id[conn_id] = conn
                 all_connectors.append(conn)
 
             # Also get custom connectors from Power Apps API (may not be in Dataverse)
             powerapps_custom = self._list_custom_connectors_from_powerapps(environment_id)
             for conn in powerapps_custom:
                 conn_id = conn.get("name", "")
-                # Only add if not already seen from Dataverse
-                if conn_id and conn_id not in seen_connector_ids:
-                    seen_connector_ids.add(conn_id)
+                if conn_id and conn_id in connector_by_id:
+                    # Connector exists in both - merge source as comma-separated
+                    existing = connector_by_id[conn_id]
+                    existing_source = existing.get("_source", "")
+                    new_source = conn.get("_source", "")
+                    if new_source and new_source not in existing_source:
+                        existing["_source"] = f"{existing_source},{new_source}"
+                elif conn_id:
+                    # Only in Power Apps, add it
+                    connector_by_id[conn_id] = conn
                     all_connectors.append(conn)
 
         # Get managed connectors from Power Apps API (unless custom_only)
@@ -2761,6 +2732,140 @@ schemaName: {schema_name}
             }
         except ClientError:
             return None
+
+    def _get_custom_connector_entity_id(self, connector_id: str) -> Optional[str]:
+        """
+        Get the Dataverse entity ID for a custom connector.
+
+        This is used when creating connection references to properly link them
+        to custom connectors via the CustomConnectorId field. Without this link,
+        connector operations may not be discoverable by agents.
+
+        Args:
+            connector_id: The connector's internal ID (e.g., shared_asana-20custom-...)
+
+        Returns:
+            The connector's Dataverse entity ID (GUID), or None if not a custom connector
+        """
+        # Query Dataverse for the connector
+        # Note: Dataverse may modify the connectorinternalid during registration,
+        # so we use contains filter instead of exact match
+        # Also query all connectors and match in Python for more flexibility
+        endpoint = "connectors?$select=connectorid,connectorinternalid,displayname"
+
+        try:
+            data = self._request("GET", endpoint)
+            connectors = data.get("value", [])
+
+            # Try exact match first
+            for conn in connectors:
+                if conn.get("connectorinternalid") == connector_id:
+                    return conn.get("connectorid")
+
+            # Try partial match - look for common prefix (before environment suffix)
+            # Power Apps IDs: shared_asana-20custom-5fd251d00ef0afcb57-5fe2f45645c919b585
+            # Dataverse IDs: shared_asana-5fasana-20custom-5fd251d00ef0afcb57
+            # Common pattern: extract the core connector name
+            connector_parts = connector_id.replace("shared_", "").split("-")
+            if connector_parts:
+                # Look for connectors that share the first part (e.g., "asana")
+                search_term = connector_parts[0].lower()
+                for conn in connectors:
+                    internal_id = conn.get("connectorinternalid", "").lower()
+                    if search_term in internal_id and "custom" in internal_id:
+                        return conn.get("connectorid")
+
+            return None
+        except ClientError:
+            # Not found or not a custom connector
+            return None
+
+    def register_connector_in_dataverse(
+        self,
+        connector_id: str,
+        display_name: str,
+        openapi_definition: dict,
+        description: Optional[str] = None,
+        icon_brand_color: str = "#007ee5",
+    ) -> Optional[str]:
+        """
+        Register a custom connector in the Dataverse connector table.
+
+        Custom connectors created via Power Apps API are not automatically registered
+        in Dataverse. This method creates a record in the Dataverse connector table
+        so that connection references can properly link to the connector via
+        CustomConnectorId.
+
+        Args:
+            connector_id: The connector's internal ID (e.g., shared_asana-20custom-...)
+            display_name: Display name for the connector
+            openapi_definition: OpenAPI 2.0 definition (dict)
+            description: Connector description (optional)
+            icon_brand_color: Icon brand color in hex format
+
+        Returns:
+            The created connector's Dataverse entity ID (GUID), or None if failed
+        """
+        import re
+
+        # Check if already registered
+        existing_id = self._get_custom_connector_entity_id(connector_id)
+        if existing_id:
+            return existing_id
+
+        # Generate logical name from connector_id
+        # Format: cr83c_asana or similar (prefix + sanitized name)
+        # Extract the sanitized part from connector_id (after shared_ and before environment suffix)
+        logical_name = re.sub(r'[^a-z0-9_]', '_', connector_id.lower())
+        # Remove shared_ prefix and truncate/clean up
+        logical_name = logical_name.replace('shared_', '').replace('-', '_')[:50]
+
+        # Serialize OpenAPI definition
+        openapi_str = json.dumps(openapi_definition)
+
+        payload = {
+            "name": logical_name,
+            "displayname": display_name,
+            "connectorinternalid": connector_id,
+            "connectortype": 1,  # 1 = Custom connector
+            "openapidefinition": openapi_str,
+            "iconbrandcolor": icon_brand_color,
+            "statecode": 0,  # Active
+            "statuscode": 1,  # Active
+        }
+
+        if description:
+            payload["description"] = description
+
+        endpoint = "connectors"
+
+        try:
+            # Use POST with Prefer header to get created record back
+            headers = self._get_headers()
+            headers["Prefer"] = "return=representation"
+            url = f"{self.api_url}/{endpoint}"
+
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+
+            result = response.json()
+            return result.get("connectorid")
+
+        except httpx.HTTPStatusError as e:
+            # Log but don't fail - connector can still work without Dataverse registration
+            # (just connection references won't have CustomConnectorId linked)
+            error_detail = str(e)
+            if e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    if "error" in error_body:
+                        error_detail = error_body["error"].get("message", str(error_body))
+                except Exception:
+                    error_detail = e.response.text[:500] if e.response.text else str(e)
+            # Raise with details so caller can see the error
+            raise ClientError(f"Failed to register connector in Dataverse: HTTP {e.response.status_code}: {error_detail}")
+        except Exception as ex:
+            raise ClientError(f"Failed to register connector in Dataverse: {ex}")
 
     def _get_connector_from_powerapps(self, connector_id: str, environment_id: str) -> dict:
         """
@@ -3247,7 +3352,8 @@ schemaName: {schema_name}
 
         try:
             # Try POST for creation (Power Platform may require POST for new, PUT for update)
-            response = self._http_client.post(url, headers=headers, json=payload, timeout=60.0)
+            # Use longer timeout for connector creation (involves script compilation)
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=180.0)
             response.raise_for_status()
             result = response.json()
 
@@ -4561,7 +4667,11 @@ schemaName: {schema_name}
         except httpx.RequestError as e:
             raise ClientError(f"Connection request failed: {e}")
 
-    def list_connection_references(self, connection_id: Optional[str] = None) -> list[dict]:
+    def list_connection_references(
+        self,
+        connection_id: Optional[str] = None,
+        connector_id: Optional[str] = None,
+    ) -> list[dict]:
         """
         List all connection references in the Dataverse environment.
 
@@ -4569,7 +4679,10 @@ schemaName: {schema_name}
         used in flows and agents.
 
         Args:
-            connection_id: Optional connection ID to filter connection references by
+            connection_id: Optional connection ID to filter connection references by.
+            connector_id: Optional connector ID to filter connection references by.
+                          Accepts both short form (shared_asana) and full path
+                          (/providers/Microsoft.PowerApps/apis/shared_asana).
 
         Returns:
             List of connection reference objects
@@ -4580,8 +4693,17 @@ schemaName: {schema_name}
         )
         url = f"{self.api_url}/connectionreferences?$select={select}"
 
+        filters = []
         if connection_id:
-            url += f"&$filter=connectionid eq '{connection_id}'"
+            filters.append(f"connectionid eq '{connection_id}'")
+        if connector_id:
+            # Normalize to full path format for filtering
+            if not connector_id.startswith("/"):
+                connector_id = f"/providers/Microsoft.PowerApps/apis/{connector_id}"
+            filters.append(f"connectorid eq '{connector_id}'")
+
+        if filters:
+            url += f"&$filter={' and '.join(filters)}"
 
         url += "&$orderby=connectionreferencedisplayname"
         headers = self._get_headers()
@@ -4669,6 +4791,147 @@ schemaName: {schema_name}
         response.raise_for_status()
         return response.json()
 
+    def _find_connection_reference_by_logical_name(self, logical_name: str) -> Optional[dict]:
+        """
+        Find a connection reference by its exact logical name.
+
+        Args:
+            logical_name: The exact connectionreferencelogicalname to search for
+
+        Returns:
+            Connection reference dict if found, None otherwise
+        """
+        try:
+            # Query for connection reference with exact logical name match
+            filter_query = f"connectionreferencelogicalname eq '{logical_name}'"
+            url = f"{self.api_url}/connectionreferences?$filter={filter_query}"
+            headers = self._get_headers()
+            response = self._http_client.get(url, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("value", [])
+            return results[0] if results else None
+        except Exception:
+            return None
+
+    def _create_bot_connection_reference(
+        self,
+        logical_name: str,
+        display_name: str,
+        connector_id: str,
+        connection_id: str,
+    ) -> dict:
+        """
+        Create a connection reference with a specific logical name for bot tools.
+
+        This is used internally when creating connector tools to ensure the
+        connection reference exists with the exact logical name format that
+        the Copilot Studio runtime expects.
+
+        Args:
+            logical_name: The exact connectionreferencelogicalname to use
+            display_name: Display name for the connection reference
+            connector_id: Full connector ID path
+            connection_id: Connection ID to link
+
+        Returns:
+            Created connection reference object
+
+        Raises:
+            ClientError: If the connection reference cannot be created
+        """
+        # Normalize connector_id to full path format if not already
+        if not connector_id.startswith("/"):
+            connector_id = f"/providers/Microsoft.PowerApps/apis/{connector_id}"
+
+        payload = {
+            "connectionreferencedisplayname": display_name,
+            "connectionreferencelogicalname": logical_name,
+            "connectorid": connector_id,
+            "connectionid": connection_id,
+        }
+
+        url = f"{self.api_url}/connectionreferences"
+        headers = self._get_headers()
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+
+            # Extract the created reference ID from response headers
+            entity_id_header = response.headers.get("OData-EntityId", "")
+            if entity_id_header:
+                import re
+                match = re.search(r"connectionreferences\(([^)]+)\)", entity_id_header)
+                if match:
+                    created_id = match.group(1)
+                    return self.get_connection_reference(created_id)
+
+            return payload
+
+        except httpx.HTTPStatusError as e:
+            error_detail = str(e)
+            if e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    if "error" in error_body:
+                        error_detail = error_body["error"].get("message", str(error_body))
+                except Exception:
+                    error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to create bot connection reference '{logical_name}': {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Connection reference request failed: {e}")
+
+    def _associate_botcomponent_connectionreference(
+        self,
+        botcomponent_id: str,
+        connection_reference_id: str,
+    ) -> bool:
+        """
+        Associate a bot component with a connection reference via the many-to-many relationship.
+
+        This is REQUIRED for connector tools to work at runtime. The Copilot Studio runtime
+        looks up connection references through this relationship, not just by logical name.
+
+        Args:
+            botcomponent_id: The bot component's unique identifier (GUID)
+            connection_reference_id: The connection reference's unique identifier (GUID)
+
+        Returns:
+            True if association was successful or already exists
+
+        Raises:
+            ClientError: If the association cannot be created
+        """
+        url = f"{self.api_url}/botcomponents({botcomponent_id})/botcomponent_connectionreference/$ref"
+        headers = self._get_headers()
+        payload = {
+            "@odata.id": f"{self.api_url}/connectionreferences({connection_reference_id})"
+        }
+
+        try:
+            response = self._http_client.post(url, headers=headers, json=payload, timeout=60.0)
+            # 204 = success, 409 = already exists (both are fine)
+            if response.status_code in [204, 409]:
+                return True
+            response.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as e:
+            # 409 Conflict means the association already exists - that's fine
+            if e.response.status_code == 409:
+                return True
+            error_detail = str(e)
+            if e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    if "error" in error_body:
+                        error_detail = error_body["error"].get("message", str(error_body))
+                except Exception:
+                    error_detail = e.response.text[:500] if e.response.text else str(e)
+            raise ClientError(f"Failed to associate bot component with connection reference: {error_detail}")
+        except httpx.RequestError as e:
+            raise ClientError(f"Association request failed: {e}")
+
     def create_connection_reference(
         self,
         display_name: str,
@@ -4717,6 +4980,14 @@ schemaName: {schema_name}
 
         if description is not None:
             payload["description"] = description
+
+        # For custom connectors, look up the Dataverse connector entity ID
+        # and set CustomConnectorId to link the connection reference properly.
+        # This is required for connector operations to be discovered correctly.
+        short_connector_id = connector_id.split("/")[-1] if "/" in connector_id else connector_id
+        custom_connector_entity_id = self._get_custom_connector_entity_id(short_connector_id)
+        if custom_connector_entity_id:
+            payload["CustomConnectorId@odata.bind"] = f"/connectors({custom_connector_entity_id})"
 
         url = f"{self.api_url}/connectionreferences"
         headers = self._get_headers()
