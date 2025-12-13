@@ -252,8 +252,10 @@ class DataverseClient:
             - System topics (ismanaged=true): Built-in topics from managed solutions
             - Custom topics (ismanaged=false): User-created topics
 
-            Agent tools have schema names containing 'InvokeConnectedAgentTaskAction'
-            and data starting with 'kind: TaskDialog'. These are filtered out by default.
+            Tools are identified by schema name patterns:
+            - Contains 'TaskAction' (API-created tools)
+            - Contains '.action.' (UI-created tools)
+            These are filtered out by default.
         """
         # Build filter
         filters = [
@@ -274,11 +276,13 @@ class DataverseClient:
         topics = result.get("value", [])
 
         if not include_tools:
-            # Filter out agent tools (InvokeConnectedAgentTaskAction components)
-            topics = [
-                t for t in topics
-                if "InvokeConnectedAgentTaskAction" not in (t.get("schemaname") or "")
-            ]
+            # Filter out ALL tools using same detection as list_tools()
+            # Tools have schema names containing 'TaskAction' or '.action.'
+            def is_tool(component: dict) -> bool:
+                schema = component.get("schemaname") or ""
+                return "TaskAction" in schema or ".action." in schema
+
+            topics = [t for t in topics if not is_tool(t)]
 
         return topics
 
