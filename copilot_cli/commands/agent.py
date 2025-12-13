@@ -520,12 +520,21 @@ def prompt_agent(
     """
     Send a prompt to a Copilot Studio agent and get the response.
 
-    Uses the Direct Line API to communicate with the agent. Supports two authentication modes:
+    Automatically detects the agent's authentication mode and uses the appropriate method:
 
-    1. Direct Line Secret (default): Requires a Direct Line secret from Copilot Studio.
-    2. Entra ID: Uses device code flow to authenticate with Microsoft Entra ID.
+    1. Direct Line Secret: For agents with "No authentication" or "Authenticate manually"
+    2. Entra ID + Direct Line: For manual auth agents using device code flow
+    3. M365 Agents SDK: For agents with "Authenticate with Microsoft" (integrated auth)
 
-    ENTRA ID SETUP (Azure App Registration):
+    AUTHENTICATION MODES:
+
+    The CLI automatically detects the agent's auth mode and handles it appropriately:
+
+    - No Auth / Manual Auth: Uses Direct Line API with --secret or --entra-id
+    - Integrated Auth ("Authenticate with Microsoft"): Uses M365 Agents SDK with
+      --client-id and --tenant-id (requires microsoft-agents-copilotstudio-client package)
+
+    M365 SDK SETUP (for Integrated Auth agents):
 
     1. Create an app registration in Azure Portal
     2. Go to Authentication > Enable "Allow public client flows"
@@ -533,33 +542,26 @@ def prompt_agent(
     4. Search for "Power Platform API" (ID: 8578e004-a5c6-46e7-913e-12f58912df43)
     5. Add delegated permission: CopilotStudio.Copilots.Invoke
     6. Grant admin consent for the permission
-    7. Note the Application (client) ID and Directory (tenant) ID
+    7. Set DATAVERSE_ENVIRONMENT_ID, ENTRA_CLIENT_ID, and AZURE_TENANT_ID env vars
 
-    ENTRA ID SETUP (Copilot Studio):
+    DIRECT LINE SETUP (for No Auth / Manual Auth agents):
 
-    1. Go to Settings > Security > Authentication
-    2. Select "Authenticate manually"
-    3. Set Service provider to "Microsoft Entra ID V2"
-    4. Enter your Client ID and Tenant ID
-    5. Save and Publish the agent
+    Get your Direct Line secret from: Copilot Studio > Settings > Channels > Direct Line
 
-    GET TOKEN ENDPOINT:
-
-    The token endpoint URL format is:
-    https://{ENV}.environment.api.powerplatform.com/powervirtualagents/botsbyschema/{BOT_SCHEMA_NAME}/directline/token?api-version=2022-03-01-preview
-
-    Where:
-    - {ENV}: Your environment ID (found in Copilot Studio > Channels > Mobile app)
-    - {AGENT_SCHEMA_NAME}: Your agent's schema name (e.g., cr83c_myAgent)
+    For Entra ID authentication with Direct Line, also get the token endpoint from:
+    Copilot Studio > Channels > Mobile app > Token Endpoint
 
     Examples:
-        # Using Direct Line secret
+        # Integrated auth agent (uses M365 SDK automatically)
+        copilot agent prompt <agent-id> -m "Hello" --client-id <app-id> --tenant-id <tenant-id>
+
+        # Using Direct Line secret (no auth / manual auth agents)
         copilot agent prompt <agent-id> --message "Hello" --secret "your-secret"
 
-        # Using Entra ID authentication
+        # Using Entra ID + Direct Line (manual auth agents)
         copilot agent prompt <agent-id> -m "Hello" --entra-id \\
             --client-id <app-client-id> --tenant-id <tenant-id> \\
-            --token-endpoint "https://{ENV}.environment.api.powerplatform.com/powervirtualagents/botsbyschema/{AGENT}/directline/token?api-version=2022-03-01-preview"
+            --token-endpoint "https://{ENV}.environment.api.powerplatform.com/..."
 
         # With file attachment
         copilot agent prompt <agent-id> -m "Review this" --file ./draft.docx --secret "xxx"
@@ -567,9 +569,11 @@ def prompt_agent(
     Environment Variables:
         DIRECTLINE_SECRET - Direct Line secret (alternative to --secret)
         ENTRA_CLIENT_ID - Entra ID client ID (alternative to --client-id)
-        ENTRA_TENANT_ID - Entra ID tenant ID (alternative to --tenant-id)
+        AZURE_TENANT_ID - Azure tenant ID (alternative to --tenant-id)
+        ENTRA_TENANT_ID - Alias for AZURE_TENANT_ID
+        DATAVERSE_ENVIRONMENT_ID - Power Platform environment ID (for M365 SDK)
         ENTRA_SCOPE - OAuth scope (default: https://api.powerplatform.com/.default)
-        AGENT_TOKEN_ENDPOINT - Agent token endpoint (alternative to --token-endpoint)
+        AGENT_TOKEN_ENDPOINT - Agent token endpoint (for Direct Line with Entra ID)
     """
     try:
         # Check agent's authentication mode before attempting Direct Line connection
@@ -580,21 +584,201 @@ def prompt_agent(
             auth_mode = auth_info.get("mode", 2)
 
             if auth_mode == 2:  # Integrated authentication ("Authenticate with Microsoft")
-                typer.echo("Error: This agent uses 'Authenticate with Microsoft' authentication mode.", err=True)
-                typer.echo("", err=True)
-                typer.echo("Direct Line does NOT support 'Authenticate with Microsoft' (Integrated auth).", err=True)
-                typer.echo("This authentication mode only works with Teams, Power Apps, and Microsoft 365 Copilot channels.", err=True)
-                typer.echo("", err=True)
-                typer.echo("To use Direct Line with this CLI, change the agent's authentication in Copilot Studio:", err=True)
-                typer.echo("  1. Go to Settings > Security > Authentication", err=True)
-                typer.echo("  2. Select either:", err=True)
-                typer.echo("     - 'No authentication' - for public access", err=True)
-                typer.echo("     - 'Authenticate manually' - for OAuth2 authentication via Direct Line", err=True)
-                typer.echo("  3. Save and Publish the agent", err=True)
-                typer.echo("", err=True)
-                typer.echo("Alternatively, use the Microsoft 365 Agents SDK for programmatic access:", err=True)
-                typer.echo("  https://learn.microsoft.com/en-us/microsoft-copilot-studio/publication-integrate-web-or-native-app-m365-agents-sdk", err=True)
-                raise typer.Exit(1)
+                # Use M365 Agents SDK for integrated auth agents
+                if verbose:
+                    typer.echo("Agent uses 'Authenticate with Microsoft' - using M365 Agents SDK...")
+
+                try:
+                    from microsoft_agents.copilotstudio.client import ConnectionSettings, CopilotClient
+                    from microsoft_agents.activity import ActivityTypes
+                    import asyncio
+                    import msal
+                except ImportError as e:
+                    typer.echo(f"Error: Required package not found: {e}", err=True)
+                    typer.echo("Install with: pip install microsoft-agents-copilotstudio-client msal aiohttp", err=True)
+                    raise typer.Exit(1)
+
+                # Get required parameters for M365 SDK
+                from copilot_cli.config import Config
+                config = Config()
+
+                m365_environment_id = os.environ.get("DATAVERSE_ENVIRONMENT_ID") or os.environ.get("POWERPLATFORM_ENVIRONMENT_ID")
+                m365_client_id = client_id or os.environ.get("ENTRA_CLIENT_ID")
+                m365_tenant_id = tenant_id or os.environ.get("AZURE_TENANT_ID") or os.environ.get("ENTRA_TENANT_ID")
+
+                if not m365_environment_id:
+                    typer.echo("Error: Environment ID required for M365 SDK.", err=True)
+                    typer.echo("Set DATAVERSE_ENVIRONMENT_ID or POWERPLATFORM_ENVIRONMENT_ID env var.", err=True)
+                    raise typer.Exit(1)
+
+                if not m365_client_id:
+                    typer.echo("Error: --client-id or ENTRA_CLIENT_ID env var required for M365 SDK.", err=True)
+                    raise typer.Exit(1)
+
+                if not m365_tenant_id:
+                    typer.echo("Error: --tenant-id or AZURE_TENANT_ID env var required for M365 SDK.", err=True)
+                    raise typer.Exit(1)
+
+                # Get agent's schema name from bot data
+                bot = client.get_bot(agent_id)
+                agent_schema_name = bot.get("schemaname")
+                if not agent_schema_name:
+                    typer.echo(f"Error: Could not get schema name for agent {agent_id}", err=True)
+                    raise typer.Exit(1)
+
+                if verbose:
+                    typer.echo(f"  Environment ID: {m365_environment_id[:20]}...")
+                    typer.echo(f"  Agent Schema: {agent_schema_name}")
+                    typer.echo(f"  Client ID: {m365_client_id[:8]}...")
+                    typer.echo(f"  Tenant ID: {m365_tenant_id[:8]}...")
+
+                # Create connection settings
+                settings = ConnectionSettings(
+                    environment_id=m365_environment_id,
+                    agent_identifier=agent_schema_name,
+                    cloud=None,
+                    copilot_agent_type=None,
+                    custom_power_platform_cloud=None,
+                )
+
+                # Acquire token using MSAL device code flow
+                if verbose:
+                    typer.echo("Acquiring token via MSAL...")
+
+                # Set up persistent token cache in CLI project directory
+                cache_file = Path(__file__).parent.parent.parent / ".m365-token-cache.json"
+                cache = msal.SerializableTokenCache()
+
+                if cache_file.exists():
+                    try:
+                        cache.deserialize(cache_file.read_text())
+                        if verbose:
+                            typer.echo(f"Loaded token cache from {cache_file}")
+                    except Exception:
+                        pass  # Ignore cache load errors
+
+                pca = msal.PublicClientApplication(
+                    client_id=m365_client_id,
+                    authority=f"https://login.microsoftonline.com/{m365_tenant_id}",
+                    token_cache=cache,
+                )
+
+                token_scopes = ["https://api.powerplatform.com/.default"]
+                accounts = pca.get_accounts()
+                access_token = None
+
+                # Try silent token acquisition first
+                if accounts:
+                    if verbose:
+                        typer.echo("Found cached account, attempting silent token acquisition...")
+                    result = pca.acquire_token_silent(token_scopes, account=accounts[0])
+                    if result and "access_token" in result:
+                        access_token = result["access_token"]
+                        if verbose:
+                            typer.echo("Token acquired from cache.")
+
+                # Fall back to device code flow if needed
+                if not access_token:
+                    if verbose:
+                        typer.echo("Initiating device code flow...")
+
+                    flow = pca.initiate_device_flow(scopes=token_scopes)
+                    if "user_code" not in flow:
+                        typer.echo(f"Error: Failed to initiate device flow: {flow.get('error_description', 'Unknown error')}", err=True)
+                        raise typer.Exit(1)
+
+                    # Display device code message to user
+                    typer.echo("")
+                    typer.echo(flow["message"])
+                    typer.echo("")
+
+                    # Wait for user to complete authentication
+                    result = pca.acquire_token_by_device_flow(flow)
+
+                    if "error" in result:
+                        typer.echo(f"Error: Authentication failed: {result.get('error_description', result.get('error'))}", err=True)
+                        raise typer.Exit(1)
+
+                    access_token = result["access_token"]
+                    if verbose:
+                        typer.echo("Authentication successful!")
+
+                # Save token cache if it changed
+                if cache.has_state_changed:
+                    try:
+                        cache_file.write_text(cache.serialize())
+                        if verbose:
+                            typer.echo(f"Saved token cache to {cache_file}")
+                    except Exception as e:
+                        if verbose:
+                            typer.echo(f"Warning: Could not save token cache: {e}", err=True)
+
+                if not access_token:
+                    typer.echo("Error: Failed to acquire access token", err=True)
+                    raise typer.Exit(1)
+
+                # Create Copilot client and send message
+                copilot_client = CopilotClient(settings, access_token)
+
+                async def prompt_with_m365_sdk():
+                    """Send prompt and collect response using M365 SDK."""
+                    # Start conversation - this sets _current_conversation_id via x-ms-conversationid header
+                    if verbose:
+                        typer.echo("Starting conversation...")
+
+                    async for activity in copilot_client.start_conversation(emit_start_conversation_event=True):
+                        if verbose:
+                            typer.echo(f"Start activity type: {activity.type}")
+                        # Process all start activities - the SDK sets conversation ID from response header
+                        if copilot_client._current_conversation_id:
+                            if verbose:
+                                typer.echo(f"Conversation ID set: {copilot_client._current_conversation_id}")
+                            break
+
+                    if not copilot_client._current_conversation_id:
+                        raise Exception("Failed to obtain conversation ID from server")
+
+                    # Now send the actual message
+                    if verbose:
+                        typer.echo(f"Sending message: \"{message}\"")
+
+                    responses = []
+                    replies = copilot_client.ask_question(message)
+
+                    async for reply in replies:
+                        if verbose:
+                            typer.echo(f"Reply activity type: {reply.type}")
+                        if reply.type == ActivityTypes.message and reply.text:
+                            responses.append(reply.text)
+
+                    return "\n".join(responses) if responses else None
+
+                try:
+                    bot_response = asyncio.run(prompt_with_m365_sdk())
+                except Exception as sdk_error:
+                    typer.echo(f"Error: M365 SDK request failed: {sdk_error}", err=True)
+                    raise typer.Exit(1)
+
+                if not bot_response:
+                    typer.echo("Error: No response received from agent", err=True)
+                    raise typer.Exit(1)
+
+                # Output the response
+                if json_output:
+                    result = {
+                        "success": True,
+                        "response": bot_response,
+                        "authMode": "integrated",
+                        "sdk": "m365-agents",
+                    }
+                    print_json(result)
+                else:
+                    if verbose:
+                        typer.echo(f"Response (via M365 Agents SDK):")
+                        typer.echo("")
+                    typer.echo(bot_response)
+
+                return  # Exit early - M365 SDK flow complete
         except typer.Exit:
             raise  # Re-raise Exit exceptions
         except Exception as auth_check_error:
