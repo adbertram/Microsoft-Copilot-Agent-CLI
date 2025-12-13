@@ -572,6 +572,36 @@ def prompt_agent(
         AGENT_TOKEN_ENDPOINT - Agent token endpoint (alternative to --token-endpoint)
     """
     try:
+        # Check agent's authentication mode before attempting Direct Line connection
+        # "Authenticate with Microsoft" (Integrated auth, mode=2) is NOT supported via Direct Line
+        client = get_client()
+        try:
+            auth_info = client.get_bot_auth(agent_id)
+            auth_mode = auth_info.get("mode", 2)
+
+            if auth_mode == 2:  # Integrated authentication ("Authenticate with Microsoft")
+                typer.echo("Error: This agent uses 'Authenticate with Microsoft' authentication mode.", err=True)
+                typer.echo("", err=True)
+                typer.echo("Direct Line does NOT support 'Authenticate with Microsoft' (Integrated auth).", err=True)
+                typer.echo("This authentication mode only works with Teams, Power Apps, and Microsoft 365 Copilot channels.", err=True)
+                typer.echo("", err=True)
+                typer.echo("To use Direct Line with this CLI, change the agent's authentication in Copilot Studio:", err=True)
+                typer.echo("  1. Go to Settings > Security > Authentication", err=True)
+                typer.echo("  2. Select either:", err=True)
+                typer.echo("     - 'No authentication' - for public access", err=True)
+                typer.echo("     - 'Authenticate manually' - for OAuth2 authentication via Direct Line", err=True)
+                typer.echo("  3. Save and Publish the agent", err=True)
+                typer.echo("", err=True)
+                typer.echo("Alternatively, use the Microsoft 365 Agents SDK for programmatic access:", err=True)
+                typer.echo("  https://learn.microsoft.com/en-us/microsoft-copilot-studio/publication-integrate-web-or-native-app-m365-agents-sdk", err=True)
+                raise typer.Exit(1)
+        except typer.Exit:
+            raise  # Re-raise Exit exceptions
+        except Exception as auth_check_error:
+            # If we can't check auth mode, continue anyway - the Direct Line call will fail with a clear error
+            if verbose:
+                typer.echo(f"Warning: Could not verify agent authentication mode: {auth_check_error}", err=True)
+
         # Determine authentication method
         directline_token = None
         user_id = f"copilot-cli-{int(time.time())}"
